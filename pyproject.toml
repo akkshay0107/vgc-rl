@@ -1,0 +1,7 @@
+[project]
+name = "vgc-rl"
+version = "0.1.0"
+description = "A RL agent to play VGC in a competent manner"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
