@@ -11,3 +11,7 @@ wheels/
 
 # Additional
 *.pdf
+
+# Inverts
+!.python-version
+!.gitignore
