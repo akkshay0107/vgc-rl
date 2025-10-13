@@ -1,18 +1,12 @@
-from __future__ import annotations
-from collections.abc import Iterator
+class MCTNode:
+    def __init__(self, parent=None, state=None) -> None:
+        self.parent = parent
+        self.childs = []
+        self.visits = 0
+        self.value = 0.0
+        self.state = state
 
-
-class MCTNode[Any]:
-    def __init__(
-        self, parent: MCTNode[Any] | None = None, state: Any | None = None
-    ) -> None:
-        self.parent: MCTNode[Any] | None = parent
-        self.childs: list[MCTNode[Any]] = []
-        self.visits: int = 0
-        self.value: float = 0.0
-        self.state: Any | None = state
-
-    def __iter__(self) -> Iterator[MCTNode[Any]]:
+    def __iter__(self):
         """
         Iterator for the node. Just iterates over the children of the node.
         """
