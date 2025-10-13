@@ -17,7 +17,27 @@ class RPSState:
 
     def moves(self):
         # Generator that yields all legal moves from current state
-        pass
+        remaining_turns = self.MAX_TURNS - self.turn
+
+        required_p1 = self.state[0][:3]
+        total_required_p1 = sum(required_p1)
+
+        required_p2 = self.state[1][:3]
+        total_required_p2 = sum(required_p2)
+
+        legal_moves_p1 = []
+        for m in self.ACTIONS:
+            if required_p1[m] > 0 or (required_p1[m] == 0 and total_required_p1 < remaining_turns):
+                legal_moves_p1.append(m)
+
+        legal_moves_p2 = []
+        for m in self.ACTIONS:
+            if required_p2[m] > 0 or (required_p2[m] == 0 and total_required_p2 < remaining_turns):
+                legal_moves_p2.append(m)
+
+        for move_p1 in legal_moves_p1:
+            for move_p2 in legal_moves_p2:
+                yield (move_p1, move_p2)
 
     @staticmethod
     def _turn_result(action):
