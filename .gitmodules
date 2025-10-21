@@ -1,3 +1,6 @@
 [submodule "pokemon-showdown"]
 	path = pokemon-showdown
 	url = https://github.com/smogon/pokemon-showdown.git
+[submodule "pokemon-showdown-client-ER"]
+	path = pokemon-showdown-client-ER
+	url = https://github.com/Elite-Redux/pokemon-showdown-client-ER.git
