@@ -1,5 +1,5 @@
 from typing import Optional, Union
-from poke_env import Player
+from poke_env import Player, RandomPlayer
 from poke_env import AccountConfiguration, ServerConfiguration
 from random_team_from_pool import RandomTeamFromPool
 from pathlib import Path
@@ -49,6 +49,11 @@ class MCTSAgent(Player):
         # implement move choice algorithm here
         return self.choose_default_move()
 
+async def main():
+    p1 = MCTSAgent(battle_format="gen92025regulationh")
+    p2 = RandomPlayer(battle_format="gen92025regulationh", team = p1._team)
+
+    await p1.battle_against(p2, n_battles=1)
 
 if __name__ == "__main__":
-    pass
+    x = main()
