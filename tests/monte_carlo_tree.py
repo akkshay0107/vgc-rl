@@ -1,10 +1,10 @@
-import rps_state
 import math
 import random
+from rps_state import RPSState
 
 
 class MCTNode:
-    def __init__(self, parent=None, rps=rps_state.RPSState()) -> None:
+    def __init__(self, parent=None, rps=RPSState()) -> None:
         self.parent = parent
         self.childs = []
         self.visits = 0.0
@@ -13,10 +13,6 @@ class MCTNode:
         self.RPS = rps
         self.moves = list(self.RPS.moves())
         self.action = -1
-
-    def __iter__(self):
-        # Iterator for the node, just iterates over all children
-        return iter(self.childs)
 
     def calc_UCB1(self, N, c):
         X_i = self.value / self.visits
@@ -86,7 +82,7 @@ def mct_search(iters=500, root=MCTNode()):
             curNode = curNode.expand()
 
         result = curNode.rollout()
-        curNode.backPropagrate(result)
+        curNode.back_propagate(result)
 
     return root
 
@@ -100,7 +96,7 @@ def human_vs_bot_game():
     if ans not in ["y", "yes"]:
         return
 
-    initial_state = rps_state.RPSState()
+    initial_state = RPSState([[3, 3, 3, 0], [3, 3, 3, 0]])
     root = MCTNode(rps=initial_state)
     root = mct_search(2000, root)
 
