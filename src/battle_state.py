@@ -19,14 +19,12 @@ class battle_state:
                 1: Tailwind
             1: Pokemon 1
                 0: Name
-                1: EVs
-                2: IVs
-                3: Nature
-                4: Volatile Statuses
-                5: Non-volatile Statuses
-                6: Stat Stages
-                7: Moves
-                8: Current HP%
+                1: Stats
+                2: Volatile Statuses
+                3: Non-volatile Statuses
+                4: Stat Stages
+                5: Moves
+                6: Current HP%
             - Below all same as Pokemon 1
             2: Pokemon 2
             Backup Space:
@@ -39,13 +37,3 @@ class battle_state:
             p1_state,
             p2_state
         ])
-
-    
-    def calculate_stats(self, base: dict, iv: dict, ev: dict, nature: dict) -> dict:
-        stats = {}
-        for k in base.keys():
-            if k == 'hp':
-                stats[k] = np.floor(((2 * base[k] + iv[k] + (ev[k] // 4)) * 50) // 100 + 50 + 10)
-            else:
-                stats[k] = np.floor((((2 * base[k] + iv[k] + (ev[k] // 4)) * 50) // 100 + 5) * nature[k])
-        return stats
