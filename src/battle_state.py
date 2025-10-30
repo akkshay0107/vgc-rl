@@ -1,8 +1,10 @@
-import numpy as np
 import torch
 import poke_env.data.gen_data as gen_data
 
-class battle_state:
+
+# TODO: redesign the state to have two channels each for one player's state
+# mold the global field state into local field states in each players side
+class BattleState:
     DEX = gen_data.GenData(9)
     ABILITIES = {0:0, 1:1, 3:'H', 4:'S'}
     VOLATILE_STATUS = ['none', 'encore', 'taunt', 'confusion']

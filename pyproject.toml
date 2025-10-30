@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "poke-env>=0.10.0",
+    "torch>=2.7.0",
 ]
 
 [tool.pyright]
@@ -14,3 +15,13 @@ venv = ".venv"
 
 [tool.ruff]
 line-length = 100
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu" },
+]
