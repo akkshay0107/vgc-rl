@@ -49,10 +49,10 @@ Tera Type: Fire
 EVs: 156 HP / 4 Def / 116 SpA / 100 SpD / 132 Spe
 Modest Nature
 IVs: 0 Atk
-- Blood Moon
+- Vacuum Wave 
 - Earth Power
 - Hyper Voice
-- Vacuum Wave
+- Blood Moon
 
 Gholdengo @ Choice Specs
 Ability: Good as Gold
