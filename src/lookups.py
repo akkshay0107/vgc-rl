@@ -37,32 +37,6 @@ POKEMON = {
     "eruption,shadowball,heatwave,overheat": 36,
 }
 
-
-NON_VOLATILE_STATUS = {"none": 0, "par": 1, "brn": 2, "slp": 3, "frz": 4, "psn": 5, "tox": 6}
-
-TYPES = {
-    "None": 0,
-    "Normal": 1,
-    "Fire": 2,
-    "Water": 3,
-    "Electric": 4,
-    "Grass": 5,
-    "Ice": 6,
-    "Fighting": 7,
-    "Poison": 8,
-    "Ground": 9,
-    "Flying": 10,
-    "Psychic": 11,
-    "Bug": 12,
-    "Rock": 13,
-    "Ghost": 14,
-    "Dragon": 15,
-    "Dark": 16,
-    "Steel": 17,
-    "Fairy": 18,
-}
-
-
 def get_base_stat_multiplier(stat_stage):
     if stat_stage >= 0:
         return (2 + stat_stage) / 2

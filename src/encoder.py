@@ -1,7 +1,7 @@
 import torch
-from poke_env.battle import Battle, SideCondition, Weather, Field
+from poke_env.battle import Battle, SideCondition, Weather, Field, Effect
 from poke_env.battle.pokemon import Pokemon
-from lookups import POKEMON, NON_VOLATILE_STATUS, TYPES
+from lookups import POKEMON
 
 
 class Encoder:
@@ -13,6 +13,37 @@ class Encoder:
         move_ids = [move.id for move in pokemon.moves.values()]
         move_list_str = ",".join(move_ids)
         return POKEMON.get(move_list_str, -1)
+
+    def _encode_pokemon(self, pokemon: Pokemon | None, pokemon_row: torch.Tensor):
+        if pokemon is None:
+            pokemon_row[0] = -1 # set ID to -1 to imply unknown
+            return
+
+        pokemon_row[0] = self._get_pokemon_id(pokemon)
+
+        pokemon_row[1] = pokemon._type_1.value
+        pokemon_row[2] = 0 if pokemon._type_2 is None else pokemon._type_2.value
+
+        pokemon_row[3] = 1 if pokemon.is_terastallized() else 0
+        pokemon_row[4] = 1 if pokemon.item() else 0
+
+        pokemon_row[5] = 0 if pokemon._status is None else pokemon._status.value
+
+        # Volatile statuses: taunt, encore, confusion
+        curr_effects = pokemon._effects
+        pokemon_row[6] = 1 if Effect.TAUNT in curr_effects else 0
+        pokemon_row[7] = 1 if Effect.ENCORE in curr_effects else 0
+        pokemon_row[8] = 1 if Effect.CONFUSION in curr_effects else 0
+
+        pokemon_row[9] = pokemon._current_hp
+
+        stats = ["atk", "def", "spa", "spd", "spe"]
+        for i, stat in enumerate(stats):
+            pokemon_row[10 + i] = pokemon._base_stats[stat]
+
+        boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
+        for i, boost in enumerate(boosts):
+            pokemon_row[15 + i] = pokemon._boosts[boost]
 
     def encode_battle_state(self, battle: Battle, state: torch.Tensor):
         """
@@ -39,7 +70,9 @@ class Encoder:
                 if grassy_terrain_start >= 0:
                     grassy_terrain_turns = 5 - (battle.turn - grassy_terrain_start)
                 elif psychic_terrain_start >= 0:
-                    psychic_terrain_turns = 5 - (battle.turn - psychic_terrain_start)
+                    psychic_terrain_turns = 5 - (
+                        battle.turn - psychic_terrain_start
+                    )
 
                 if trick_room_start >= 0:
                     trick_room_turns = 5 - (battle.turn - trick_room_start)
@@ -68,7 +101,7 @@ class Encoder:
             tailwind_start = battle._side_conditions.get(SideCondition.TAILWIND, -1)
             veil_start = battle._side_conditions.get(SideCondition.AURORA_VEIL, -1)
             if tailwind_start >= 0:
-                tailwind_turns = 5 - (battle.turn - tailwind_start)
+                tailwind_turns = 4 - (battle.turn - tailwind_start)
             if veil_start >= 0:
                 veil_turns = 5 - (battle.turn - veil_start)
         state[0, 0, 5] = tailwind_turns
@@ -77,61 +110,18 @@ class Encoder:
         tailwind_turns = 0
         veil_turns = 0
         if battle._opponent_side_conditions:
-            tailwind_start = battle._opponent_side_conditions.get(SideCondition.TAILWIND, -1)
-            veil_start = battle._opponent_side_conditions.get(SideCondition.AURORA_VEIL, -1)
+            tailwind_start = battle._opponent_side_conditions.get(
+                SideCondition.TAILWIND, -1
+            )
+            veil_start = battle._opponent_side_conditions.get(
+                SideCondition.AURORA_VEIL, -1
+            )
             if tailwind_start >= 0:
-                tailwind_turns = 5 - (battle.turn - tailwind_start)
+                tailwind_turns = 4 - (battle.turn - tailwind_start)
             if veil_start >= 0:
                 veil_turns = 5 - (battle.turn - veil_start)
         state[1, 0, 5] = tailwind_turns
         state[1, 0, 6] = veil_turns
 
-        for player_idx, team in enumerate([battle.team, battle.opponent_team]):
-            teamlist = list(team.values())
-            for i in range(len(team)):
-                pokemon = teamlist[i]
-                pokemon_row = state[player_idx, i + 1]
-
-                # Col 0 - pokemonID
-                pokemon_row[0] = self._get_pokemon_id(pokemon)
-
-                # Col 1-2 - typing
-                if pokemon.types:
-                    pokemon_row[1] = TYPES.get(pokemon.types[0].name.capitalize(), 0)
-                    if len(pokemon.types) > 1:
-                        pokemon_row[2] = TYPES.get(pokemon.types[1].name.capitalize(), 0)
-
-                # Col 3 - tera burnt
-                pokemon_row[3] = 1 if pokemon.terastallized else 0
-
-                # Col 4 - item held / consumed or knocked off (1 if item is held, 0 otherwise)
-                pokemon_row[4] = 1 if pokemon.item else 0
-
-                # Col 5 - non volatile status
-                pokemon_row[5] = (
-                    NON_VOLATILE_STATUS.get(pokemon.status.name.lower(), 0) if pokemon.status else 0
-                )
-
-                # Col 6-8 - volatile statuses
-                pokemon_row[6] = 1 if "taunt" in pokemon.volatile_status else 0
-                pokemon_row[7] = 1 if "encore" in pokemon.volatile_status else 0
-                pokemon_row[8] = 1 if "confusion" in pokemon.volatile_status else 0
-
-                # Col 9 - current HP stat
-                pokemon_row[9] = pokemon.current_hp
-
-                # Col 10-14 - base stats (excluding HP)
-                pokemon_row[10] = pokemon.base_stats["atk"]
-                pokemon_row[11] = pokemon.base_stats["def"]
-                pokemon_row[12] = pokemon.base_stats["spa"]
-                pokemon_row[13] = pokemon.base_stats["spd"]
-                pokemon_row[14] = pokemon.base_stats["spe"]
-
-                # Col 15-21 - stat stages
-                pokemon_row[15] = pokemon.boosts["atk"]
-                pokemon_row[16] = pokemon.boosts["def"]
-                pokemon_row[17] = pokemon.boosts["spa"]
-                pokemon_row[18] = pokemon.boosts["spd"]
-                pokemon_row[19] = pokemon.boosts["spe"]
-                pokemon_row[20] = pokemon.boosts["accuracy"]
-                pokemon_row[21] = pokemon.boosts["evasion"]
+        # TODO: fetch the correct pokemon for the player
+        # and the opponent (None is opponents pokemon is unknown)
