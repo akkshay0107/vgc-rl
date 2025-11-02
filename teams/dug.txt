@@ -27,8 +27,8 @@ Tera Type: Fairy
 EVs: 44 HP / 204 Atk / 4 Def / 4 SpD / 252 Spe
 Jolly Nature
 - Scale Shot
-- Tailwind
 - Haze
+- Tailwind
 - Protect
 
 Incineroar @ Safety Goggles
@@ -49,7 +49,7 @@ Tera Type: Fire
 EVs: 156 HP / 4 Def / 116 SpA / 100 SpD / 132 Spe
 Modest Nature
 IVs: 0 Atk
-- Vacuum Wave 
+- Vacuum Wave
 - Earth Power
 - Hyper Voice
 - Blood Moon

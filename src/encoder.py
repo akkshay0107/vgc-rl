@@ -71,8 +71,8 @@ class Encoder:
                 tailwind_turns = 5 - (battle.turn - tailwind_start)
             if veil_start >= 0:
                 veil_turns = 5 - (battle.turn - veil_start)
-        state[0,0,5] = tailwind_turns
-        state[0,0,6] = veil_turns
+        state[0, 0, 5] = tailwind_turns
+        state[0, 0, 6] = veil_turns
 
         tailwind_turns = 0
         veil_turns = 0
@@ -83,58 +83,55 @@ class Encoder:
                 tailwind_turns = 5 - (battle.turn - tailwind_start)
             if veil_start >= 0:
                 veil_turns = 5 - (battle.turn - veil_start)
-        state[1,0,5] = tailwind_turns
-        state[1,0,6] = veil_turns
+        state[1, 0, 5] = tailwind_turns
+        state[1, 0, 6] = veil_turns
 
+        for player_idx, team in enumerate([battle.team, battle.opponent_team]):
+            teamlist = list(team.values())
+            for i in range(len(team)):
+                pokemon = teamlist[i]
+                pokemon_row = state[player_idx, i + 1]
 
-        for player_idx, player in enumerate([battle.player, battle.opponent]):
-            for i in range(4):  # 4 pokemon per player on the field in VGC
-                if i < len(player.team):
-                    pokemon = list(player.team.values())[i]
-                    pokemon_row = state[player_idx, i + 1]
+                # Col 0 - pokemonID
+                pokemon_row[0] = self._get_pokemon_id(pokemon)
 
-                    # Col 0 - pokemonID
-                    pokemon_row[0] = self._get_pokemon_id(pokemon)
+                # Col 1-2 - typing
+                if pokemon.types:
+                    pokemon_row[1] = TYPES.get(pokemon.types[0].name.capitalize(), 0)
+                    if len(pokemon.types) > 1:
+                        pokemon_row[2] = TYPES.get(pokemon.types[1].name.capitalize(), 0)
 
-                    # Col 1-2 - typing
-                    if pokemon.types:
-                        pokemon_row[1] = TYPES.get(pokemon.types[0].name.capitalize(), 0)
-                        if len(pokemon.types) > 1:
-                            pokemon_row[2] = TYPES.get(pokemon.types[1].name.capitalize(), 0)
+                # Col 3 - tera burnt
+                pokemon_row[3] = 1 if pokemon.terastallized else 0
 
-                    # Col 3 - tera burnt
-                    pokemon_row[3] = 1 if pokemon.terastallized else 0
+                # Col 4 - item held / consumed or knocked off (1 if item is held, 0 otherwise)
+                pokemon_row[4] = 1 if pokemon.item else 0
 
-                    # Col 4 - item held / consumed or knocked off (1 if item is held, 0 otherwise)
-                    pokemon_row[4] = 1 if pokemon.item else 0
+                # Col 5 - non volatile status
+                pokemon_row[5] = (
+                    NON_VOLATILE_STATUS.get(pokemon.status.name.lower(), 0) if pokemon.status else 0
+                )
 
-                    # Col 5 - non volatile status
-                    pokemon_row[5] = (
-                        NON_VOLATILE_STATUS.get(pokemon.status.name.lower(), 0)
-                        if pokemon.status
-                        else 0
-                    )
+                # Col 6-8 - volatile statuses
+                pokemon_row[6] = 1 if "taunt" in pokemon.volatile_status else 0
+                pokemon_row[7] = 1 if "encore" in pokemon.volatile_status else 0
+                pokemon_row[8] = 1 if "confusion" in pokemon.volatile_status else 0
 
-                    # Col 6-8 - volatile statuses
-                    pokemon_row[6] = 1 if "taunt" in pokemon.volatile_status else 0
-                    pokemon_row[7] = 1 if "encore" in pokemon.volatile_status else 0
-                    pokemon_row[8] = 1 if "confusion" in pokemon.volatile_status else 0
+                # Col 9 - current HP stat
+                pokemon_row[9] = pokemon.current_hp
 
-                    # Col 9 - current HP stat
-                    pokemon_row[9] = pokemon.current_hp
+                # Col 10-14 - base stats (excluding HP)
+                pokemon_row[10] = pokemon.base_stats["atk"]
+                pokemon_row[11] = pokemon.base_stats["def"]
+                pokemon_row[12] = pokemon.base_stats["spa"]
+                pokemon_row[13] = pokemon.base_stats["spd"]
+                pokemon_row[14] = pokemon.base_stats["spe"]
 
-                    # Col 10-14 - base stats (excluding HP)
-                    pokemon_row[10] = pokemon.base_stats["atk"]
-                    pokemon_row[11] = pokemon.base_stats["def"]
-                    pokemon_row[12] = pokemon.base_stats["spa"]
-                    pokemon_row[13] = pokemon.base_stats["spd"]
-                    pokemon_row[14] = pokemon.base_stats["spe"]
-
-                    # Col 15-21 - stat stages
-                    pokemon_row[15] = pokemon.boosts["atk"]
-                    pokemon_row[16] = pokemon.boosts["def"]
-                    pokemon_row[17] = pokemon.boosts["spa"]
-                    pokemon_row[18] = pokemon.boosts["spd"]
-                    pokemon_row[19] = pokemon.boosts["spe"]
-                    pokemon_row[20] = pokemon.boosts["accuracy"]
-                    pokemon_row[21] = pokemon.boosts["evasion"]
+                # Col 15-21 - stat stages
+                pokemon_row[15] = pokemon.boosts["atk"]
+                pokemon_row[16] = pokemon.boosts["def"]
+                pokemon_row[17] = pokemon.boosts["spa"]
+                pokemon_row[18] = pokemon.boosts["spd"]
+                pokemon_row[19] = pokemon.boosts["spe"]
+                pokemon_row[20] = pokemon.boosts["accuracy"]
+                pokemon_row[21] = pokemon.boosts["evasion"]
