@@ -1,5 +1,5 @@
 import torch
-from poke_env.battle import Battle, SideCondition, Weather, Field, Effect
+from poke_env.battle import DoubleBattle, SideCondition, Weather, Field, Effect
 from poke_env.battle.pokemon import Pokemon
 from lookups import POKEMON
 
@@ -27,10 +27,10 @@ class Encoder:
         pokemon_row[3] = 1 if pokemon.is_terastallized() else 0
         pokemon_row[4] = 1 if pokemon.item() else 0
 
-        pokemon_row[5] = 0 if pokemon._status is None else pokemon._status.value
+        pokemon_row[5] = 0 if pokemon.status is None else pokemon.status.value
 
         # Volatile statuses: taunt, encore, confusion
-        curr_effects = pokemon._effects
+        curr_effects = pokemon.effects
         pokemon_row[6] = 1 if Effect.TAUNT in curr_effects else 0
         pokemon_row[7] = 1 if Effect.ENCORE in curr_effects else 0
         pokemon_row[8] = 1 if Effect.CONFUSION in curr_effects else 0
@@ -39,13 +39,13 @@ class Encoder:
 
         stats = ["atk", "def", "spa", "spd", "spe"]
         for i, stat in enumerate(stats):
-            pokemon_row[10 + i] = pokemon._base_stats[stat]
+            pokemon_row[10 + i] = pokemon.base_stats[stat]
 
         boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
         for i, boost in enumerate(boosts):
-            pokemon_row[15 + i] = pokemon._boosts[boost]
+            pokemon_row[15 + i] = pokemon.boosts[boost]
 
-    def encode_battle_state(self, battle: Battle, state: torch.Tensor):
+    def encode_battle_state(self, battle: DoubleBattle, state: torch.Tensor):
         """
         Fills the state tensor with the current state of the battle.
 
@@ -62,10 +62,10 @@ class Encoder:
             trick_room_turns = 0
             grassy_terrain_turns = 0
             psychic_terrain_turns = 0
-            if battle._fields:
-                grassy_terrain_start = battle._fields.get(Field.GRASSY_TERRAIN, -1)
-                psychic_terrain_start = battle._fields.get(Field.PSYCHIC_TERRAIN, -1)
-                trick_room_start = battle._fields.get(Field.TRICK_ROOM, -1)
+            if battle.fields:
+                grassy_terrain_start = battle.fields.get(Field.GRASSY_TERRAIN, -1)
+                psychic_terrain_start = battle.fields.get(Field.PSYCHIC_TERRAIN, -1)
+                trick_room_start = battle.fields.get(Field.TRICK_ROOM, -1)
 
                 if grassy_terrain_start >= 0:
                     grassy_terrain_turns = 5 - (battle.turn - grassy_terrain_start)
@@ -97,9 +97,9 @@ class Encoder:
         # Local effects
         tailwind_turns = 0
         veil_turns = 0
-        if battle._side_conditions:
-            tailwind_start = battle._side_conditions.get(SideCondition.TAILWIND, -1)
-            veil_start = battle._side_conditions.get(SideCondition.AURORA_VEIL, -1)
+        if battle.side_conditions:
+            tailwind_start = battle.side_conditions.get(SideCondition.TAILWIND, -1)
+            veil_start = battle.side_conditions.get(SideCondition.AURORA_VEIL, -1)
             if tailwind_start >= 0:
                 tailwind_turns = 4 - (battle.turn - tailwind_start)
             if veil_start >= 0:
@@ -109,11 +109,11 @@ class Encoder:
 
         tailwind_turns = 0
         veil_turns = 0
-        if battle._opponent_side_conditions:
-            tailwind_start = battle._opponent_side_conditions.get(
+        if battle.opponent_side_conditions:
+            tailwind_start = battle.opponent_side_conditions.get(
                 SideCondition.TAILWIND, -1
             )
-            veil_start = battle._opponent_side_conditions.get(
+            veil_start = battle.opponent_side_conditions.get(
                 SideCondition.AURORA_VEIL, -1
             )
             if tailwind_start >= 0:
@@ -123,5 +123,20 @@ class Encoder:
         state[1, 0, 5] = tailwind_turns
         state[1, 0, 6] = veil_turns
 
-        # TODO: fetch the correct pokemon for the player
-        # and the opponent (None is opponents pokemon is unknown)
+        p1_active_pokemon = [mon for mon in battle.team.values() if mon.active]
+        p1_other_pokemon = [mon for mon in battle.team.values() if not mon.active or mon.fainted]
+
+        for i, mon in enumerate(p1_active_pokemon):
+            self._encode_pokemon(mon, state[0, 1 + i])
+
+        for i, mon in enumerate(p1_other_pokemon):
+            self._encode_pokemon(mon, state[0, 3 + i])
+
+        p2_active_pokemon = [mon for mon in battle.opponent_team.values() if mon.active]
+        p2_other_pokemon = [mon for mon in battle.opponent_team.values() if not mon.active or mon.fainted]
+
+        for i, mon in enumerate(p2_active_pokemon):
+            self._encode_pokemon(mon, state[1, 1 + i])
+
+        for i, mon in enumerate(p2_other_pokemon):
+            self._encode_pokemon(mon, state[1, 3 + i])
