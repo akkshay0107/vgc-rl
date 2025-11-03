@@ -21,8 +21,8 @@ class Encoder:
 
         pokemon_row[0] = self._get_pokemon_id(pokemon)
 
-        pokemon_row[1] = pokemon._type_1.value
-        pokemon_row[2] = 0 if pokemon._type_2 is None else pokemon._type_2.value
+        pokemon_row[1] = pokemon.type_1.value
+        pokemon_row[2] = 0 if pokemon.type_2 is None else pokemon.type_2.value
 
         pokemon_row[3] = 1 if pokemon.is_terastallized() else 0
         pokemon_row[4] = 1 if pokemon.item() else 0
