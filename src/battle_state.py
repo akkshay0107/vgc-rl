@@ -11,7 +11,7 @@ class BattleState:
     5 rows - 1st row for field conditions on respective players side of the field
                 Next 4 rows for the state of each pokemon selected to play
 
-    22 cols for pokemons
+    24 cols for pokemons
         Col 0 - pokemonID
         Col 1 - primary typing
         Col 2 - secondary typing
@@ -22,8 +22,11 @@ class BattleState:
         Col 9 - current HP stat
         Col [10-14] - base stats (excluding HP)
         Col [15-21] - stat stages (all 6 base stars excluding HP + accuracy and evasion)
+        Col 22 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
+        Col 23 - probability of protect if used this turn
 
-    cols for field effects (first 5 are global, last 2 are local, value of 0 means inactive)
+    cols for field effects (first 5 are global, 6 and 7th are local, value of 0 means inactive)
+        also stores some team level counters
         Col 0 - trick room turns remaining
         Col 1 - grassy terrain turns remaining
         Col 2 - psy terrain turns remaining
@@ -31,13 +34,11 @@ class BattleState:
         Col 4 - rain turns remaining
         Col 5 - tailwind turns remaining
         Col 6 - aurora veil turns remaining
-        Col [7-21] - padding using 0 (future space to expand ??)
-
-    Additional considerations for the future
-        Store history of moves for moves that are not independent (Protect, Stomping Tantrum)
-        Store Rage Fist stacks for annihilape ??
+        Col 7 - number of fainted pokemon in the team
+        Col 8 - rage fist stacks (0 if no annihilape in the team)
+        Col [9-21] - padding using 0 (future space to expand ??)
     """
 
     def __init__(self):
         # defaults to wrapping over a bunch of zeros
-        return torch.zeros(2, 5, 22)
+        return torch.zeros(2, 5, 24)
