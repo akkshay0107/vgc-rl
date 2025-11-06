@@ -24,8 +24,8 @@ class Encoder:
         pokemon_row[1] = pokemon.type_1.value
         pokemon_row[2] = 0 if pokemon.type_2 is None else pokemon.type_2.value
 
-        pokemon_row[3] = 1 if pokemon.is_terastallized() else 0
-        pokemon_row[4] = 1 if pokemon.item() else 0
+        pokemon_row[3] = 1 if pokemon.is_terastallized else 0
+        pokemon_row[4] = 1 if pokemon.item else 0
 
         pokemon_row[5] = 0 if pokemon.status is None else pokemon.status.value
 
@@ -35,7 +35,7 @@ class Encoder:
         pokemon_row[7] = 1 if Effect.ENCORE in curr_effects else 0
         pokemon_row[8] = 1 if Effect.CONFUSION in curr_effects else 0
 
-        pokemon_row[9] = pokemon._current_hp
+        pokemon_row[9] = pokemon._current_hp if pokemon._current_hp is not None else 0
 
         stats = ["atk", "def", "spa", "spd", "spe"]
         for i, stat in enumerate(stats):
@@ -44,6 +44,9 @@ class Encoder:
         boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
         for i, boost in enumerate(boosts):
             pokemon_row[15 + i] = pokemon.boosts[boost]
+
+        pokemon_row[22] = pokemon.protect_counter
+        pokemon_row[23] = prev_move_failed = 0 # TODO: implement this (not tracked in poke-env)
 
     def encode_battle_state(self, battle: DoubleBattle, state: torch.Tensor):
         """
@@ -123,20 +126,36 @@ class Encoder:
         state[1, 0, 5] = tailwind_turns
         state[1, 0, 6] = veil_turns
 
-        p1_active_pokemon = [mon for mon in battle.team.values() if mon.active]
-        p1_other_pokemon = [mon for mon in battle.team.values() if not mon.active or mon.fainted]
+        p1_fainted_count = 0
+        p1_rage_fist_stacks = 0 # TODO: calculate this somehow
+        active_slot, bench_slot = 0, 2
 
-        for i, mon in enumerate(p1_active_pokemon):
-            self._encode_pokemon(mon, state[0, 1 + i])
+        for mon in battle.team.values():
+            if mon.active:
+                self._encode_pokemon(mon, state[0, active_slot])
+                active_slot += 1
+            else:
+                self._encode_pokemon(mon, state[0, bench_slot])
+                bench_slot += 1
+                if mon.fainted:
+                    p1_fainted_count += 1
 
-        for i, mon in enumerate(p1_other_pokemon):
-            self._encode_pokemon(mon, state[0, 3 + i])
+        state[0, 0, 7] = p1_fainted_count
+        state[0, 0, 8] = p1_rage_fist_stacks
 
-        p2_active_pokemon = [mon for mon in battle.opponent_team.values() if mon.active]
-        p2_other_pokemon = [mon for mon in battle.opponent_team.values() if not mon.active or mon.fainted]
+        p2_fainted_count = 0
+        p2_rage_fist_stacks = 0 # TODO: calculate this somehow
+        active_slot, bench_slot = 0, 2
 
-        for i, mon in enumerate(p2_active_pokemon):
-            self._encode_pokemon(mon, state[1, 1 + i])
+        for mon in battle.opponent_team.values():
+            if mon.active:
+                self._encode_pokemon(mon, state[1, active_slot])
+                active_slot += 1
+            else:
+                self._encode_pokemon(mon, state[1, bench_slot])
+                bench_slot += 1
+                if mon.fainted:
+                    p2_fainted_count += 1
 
-        for i, mon in enumerate(p2_other_pokemon):
-            self._encode_pokemon(mon, state[1, 3 + i])
+        state[1, 0, 7] = p2_fainted_count
+        state[1, 0, 8] = p2_rage_fist_stacks

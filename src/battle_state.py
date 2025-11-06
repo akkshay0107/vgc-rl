@@ -22,8 +22,8 @@ class BattleState:
         Col 9 - current HP stat
         Col [10-14] - base stats (excluding HP)
         Col [15-21] - stat stages (all 6 base stars excluding HP + accuracy and evasion)
-        Col 22 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
-        Col 23 - probability of protect if used this turn
+        Col 22 - protect counter
+        Col 23 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
 
     cols for field effects (first 5 are global, 6 and 7th are local, value of 0 means inactive)
         also stores some team level counters
