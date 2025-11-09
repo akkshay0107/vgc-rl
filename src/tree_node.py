@@ -1,52 +1,51 @@
 import math
 import random
-from battle_state import BattleState
+from battle_state import BattleState, apply_move, get_moves, check_game_end
+from eval import pseudo_eval
 
 EXPLORATION_CONSTANT = math.sqrt(2)
 
+
 class TreeNode:
-    def __init__(
-        self,
-        parent=None,
-    ) -> None:
+    def __init__(self, parent=None, battle_state=BattleState()) -> None:
         self.parent = parent
         self.childs = []
-        self.visits = 0.0
+        self.visits = 0
         self.value = 0.0
-        self.battle_state = BattleState()
+        self.battle_state = battle_state
+        self.moves = get_moves(self.battle_state)  # generator over moves
         self.action = -1
+        self.exhausted = False  # Track if moves generator is exhausted
 
     def ucb1(self, N, c):
-        X_i = self.value / self.visits
-        n_i = self.visits
-        return X_i + c * math.sqrt(math.log(N) / n_i)
+        if self.visits == 0:
+            return float("inf")  # Encourage exploration of unvisited nodes
+        return (self.value / self.visits) + c * math.sqrt(math.log(N) / self.visits)
 
-    # TODO: implement expand
-    # Requires modification to BattleState to continue
     def expand(self):
-        pass
-        # action = self.moves.pop()
-        # nextRPS = self.RPS.next_state(action)
-        # child = MCTNode(self, nextRPS)
-        # child.action = action
-        # self.childs.append(child)
-        # return child
+        if self.exhausted:
+            return None
+        try:
+            action = next(self.moves)
+        except StopIteration:
+            self.exhausted = True
+            return None
+        next_state = apply_move(self.battle_state, action)
+        child = TreeNode(self, next_state)
+        child.action = action
+        self.childs.append(child)
+        return child
 
-    # TODO: implement rollout
-    # Make sure to rollout to a fixed depth below current node
-    # and then use eval from NN to choose the best node
-    # Do not rollout entire games it is too slow
-    def rollout(self):
-        pass
-        # if self.state:
-        #     curRPS = self.RPS
+    def rollout(self, max_depth=2):
+        current_state = self.battle_state
+        for _ in range(max_depth):
+            moves = list(get_moves(current_state))
+            if not moves:
+                break
+            action = random.choice(moves)
+            current_state = apply_move(current_state, action)
 
-        #     while True:
-        #         if curRPS.is_end_state():
-        #             return curRPS.get_result()
-
-        #         action = random.choice(list(curRPS.moves()))
-        #         curRPS = curRPS.next_state(action)
+        return pseudo_eval(current_state)
 
     def back_propagate(self, result):
         self.visits += 1
@@ -55,14 +54,11 @@ class TreeNode:
             self.parent.back_propagate(result)
 
     def best_child(self):
-        return max(self.childs, key=lambda c: c.ucb1(EXPLORATION_CONSTANT))
-
-    # TODO: implement is_fully_expanded and is_terminal
-    def is_fully_expanded(self):
-        pass
+        total_visits = self.visits if not self.parent else self.parent.visits
+        return max(self.childs, key=lambda c: c.ucb1(total_visits, EXPLORATION_CONSTANT))
 
     def is_terminal(self):
-        pass
+        return check_game_end(self.battle_state)
 
 
 if __name__ == "__main_":

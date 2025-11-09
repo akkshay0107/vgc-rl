@@ -40,5 +40,32 @@ class BattleState:
     """
 
     def __init__(self):
-        # defaults to wrapping over a bunch of zeros
-        return torch.zeros(2, 5, 24)
+        self.state = torch.zeros((2, 5, 24))
+        self.prob = 1.0
+
+
+def generate_moves_for_pokemon(current_state: BattleState, player):
+    slice = current_state.state[player]
+    pid1 = slice[1, 0] if slice[1, 9] > 0 else -1
+    pid2 = slice[2, 0] if slice[2, 9] > 0 else -1
+
+    # TODO: fetch moves from each pid and return it as a generator
+    yield ()
+
+
+def get_moves(current_state: BattleState):
+    p1_moves = generate_moves_for_pokemon(current_state, player=0)
+    p2_moves = generate_moves_for_pokemon(current_state, player=1)
+
+    # Cartesian product of player1_moves and player2_moves
+    for move1 in p1_moves:
+        for move2 in p2_moves:
+            yield (move1, move2)
+
+
+def apply_move(state: BattleState, move) -> BattleState:
+    return BattleState()
+
+
+def check_game_end(state: BattleState) -> bool:
+    return False
