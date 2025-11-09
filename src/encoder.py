@@ -1,7 +1,9 @@
 import torch
 from poke_env.battle import DoubleBattle, SideCondition, Weather, Field, Effect
 from poke_env.battle.pokemon import Pokemon
+from extended_battle import ExtendedBattle
 from lookups import POKEMON
+import sys
 
 
 class Encoder:
@@ -14,7 +16,7 @@ class Encoder:
         move_list_str = ",".join(move_ids)
         return POKEMON.get(move_list_str, -1)
 
-    def _encode_pokemon(self, pokemon: Pokemon | None, pokemon_row: torch.Tensor):
+    def _encode_pokemon(self, pokemon: Pokemon | None, pokemon_row: torch.Tensor, battle: ExtendedBattle, opponent: bool = False):
         if pokemon is None:
             pokemon_row[0] = -1 # set ID to -1 to imply unknown
             return
@@ -46,9 +48,11 @@ class Encoder:
             pokemon_row[15 + i] = pokemon.boosts[boost]
 
         pokemon_row[22] = pokemon.protect_counter
-        pokemon_row[23] = prev_move_failed = 0 # TODO: implement this (not tracked in poke-env)
+        # pokemon_row[23] = prev_move_failed = 0 # TODO: implement this (not tracked in poke-env)
 
-    def encode_battle_state(self, battle: DoubleBattle, state: torch.Tensor):
+        pokemon_row[23] = 1 if battle.did_last_move_fail(pokemon, opponent) else 0
+
+    def encode_battle_state(self, battle: ExtendedBattle, state: torch.Tensor):
         """
         Fills the state tensor with the current state of the battle.
 
@@ -129,13 +133,12 @@ class Encoder:
         p1_fainted_count = 0
         p1_rage_fist_stacks = 0 # TODO: calculate this somehow
         active_slot, bench_slot = 0, 2
-
         for mon in battle.team.values():
             if mon.active:
-                self._encode_pokemon(mon, state[0, active_slot])
+                self._encode_pokemon(mon, state[0, active_slot], battle)
                 active_slot += 1
             else:
-                self._encode_pokemon(mon, state[0, bench_slot])
+                self._encode_pokemon(mon, state[0, bench_slot], battle)
                 bench_slot += 1
                 if mon.fainted:
                     p1_fainted_count += 1
@@ -149,10 +152,10 @@ class Encoder:
 
         for mon in battle.opponent_team.values():
             if mon.active:
-                self._encode_pokemon(mon, state[1, active_slot])
+                self._encode_pokemon(mon, state[1, active_slot], battle, opponent=True)
                 active_slot += 1
             else:
-                self._encode_pokemon(mon, state[1, bench_slot])
+                self._encode_pokemon(mon, state[1, bench_slot], battle, opponent=True)
                 bench_slot += 1
                 if mon.fainted:
                     p2_fainted_count += 1
