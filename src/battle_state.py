@@ -46,8 +46,8 @@ class BattleState:
 
 def generate_moves_for_pokemon(current_state: BattleState, player):
     slice = current_state.state[player]
-    pid1 = slice[1, 0] if slice[1, 9] > 0 else -1
-    pid2 = slice[2, 0] if slice[2, 9] > 0 else -1
+    pid1 = int(slice[1, 0].item()) if slice[1, 9] > 0 else -1
+    pid2 = int(slice[2, 0].item()) if slice[2, 9] > 0 else -1
 
     # TODO: fetch moves from each pid and return it as a generator
     yield ()
@@ -68,4 +68,6 @@ def apply_move(state: BattleState, move) -> BattleState:
 
 
 def check_game_end(state: BattleState) -> bool:
-    return False
+    player_loss = state.state[0, 0, 7].item() == 4
+    opponent_loss = state.state[1, 0, 7].item() == 4
+    return player_loss or opponent_loss
