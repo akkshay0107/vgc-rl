@@ -15,15 +15,15 @@ class BattleState:
         Col 0 - pokemonID
         Col 1 - primary typing
         Col 2 - secondary typing
-        Col 3 - tera burnt or not
+        Col 3 - tera type (0 if tera not used else tera type)
         Col 4 - item held / consumed or knocked off
         Col 5 - non volatile status condition
         Col [6-8] - one hot encoding of taunt, encore, confusion status respectively (1 if active, 0 otherwise)
         Col 9 - current HP stat
-        Col [10-14] - base stats (excluding HP)
-        Col [15-21] - stat stages (all 6 base stars excluding HP + accuracy and evasion)
-        Col 22 - protect counter
-        Col 23 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
+        Col [10-15] - base stats
+        Col [16-22] - stat stages (all 6 base stars excluding HP + accuracy and evasion)
+        Col 23 - protect counter
+        Col 24 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
 
     cols for field effects (first 5 are global, 6 and 7th are local, value of 0 means inactive)
         also stores some team level counters
@@ -40,34 +40,10 @@ class BattleState:
     """
 
     def __init__(self):
-        self.state = torch.zeros((2, 5, 24))
+        self.state = torch.zeros((2, 5, 25))
         self.prob = 1.0
 
-
-def generate_moves_for_pokemon(current_state: BattleState, player):
-    slice = current_state.state[player]
-    pid1 = int(slice[1, 0].item()) if slice[1, 9] > 0 else -1
-    pid2 = int(slice[2, 0].item()) if slice[2, 9] > 0 else -1
-
-    # TODO: fetch moves from each pid and return it as a generator
-    yield ()
-
-
-def get_moves(current_state: BattleState):
-    p1_moves = generate_moves_for_pokemon(current_state, player=0)
-    p2_moves = generate_moves_for_pokemon(current_state, player=1)
-
-    # Cartesian product of player1_moves and player2_moves
-    for move1 in p1_moves:
-        for move2 in p2_moves:
-            yield (move1, move2)
-
-
-def apply_move(state: BattleState, move) -> BattleState:
-    return BattleState()
-
-
-def check_game_end(state: BattleState) -> bool:
-    player_loss = state.state[0, 0, 7].item() == 4
-    opponent_loss = state.state[1, 0, 7].item() == 4
-    return player_loss or opponent_loss
+    def check_game_end(self) -> bool:
+        player_loss = self.state[0, 0, 7].item() == 4
+        opponent_loss = self.state[1, 0, 7].item() == 4
+        return player_loss or opponent_loss

@@ -1,7 +1,8 @@
 import math
 import random
-from battle_state import BattleState, apply_move, get_moves, check_game_end
+from battle_state import BattleState
 from eval import pseudo_eval
+from sandbox import Sandbox
 
 EXPLORATION_CONSTANT = math.sqrt(2)
 
@@ -13,7 +14,7 @@ class TreeNode:
         self.visits = 0
         self.value = 0.0
         self.battle_state = battle_state
-        self.moves = get_moves(self.battle_state)  # generator over moves
+        self.moves = Sandbox(self.battle_state).get_moves() # generator over moves
         self.action = -1
         self.exhausted = False  # Track if moves generator is exhausted
 
@@ -30,7 +31,8 @@ class TreeNode:
         except StopIteration:
             self.exhausted = True
             return None
-        next_state = apply_move(self.battle_state, action)
+        box = Sandbox(self.battle_state)
+        next_state = box.simulate_turn(action)
         child = TreeNode(self, next_state)
         child.action = action
         self.childs.append(child)
@@ -38,12 +40,13 @@ class TreeNode:
 
     def rollout(self, max_depth=2):
         current_state = self.battle_state
+        box = Sandbox(self.battle_state)
         for _ in range(max_depth):
-            moves = list(get_moves(current_state))
+            moves = list(box.get_moves())
             if not moves:
                 break
             action = random.choice(moves)
-            current_state = apply_move(current_state, action)
+            current_state = box.simulate_turn(action)
 
         return pseudo_eval(current_state)
 
@@ -58,7 +61,7 @@ class TreeNode:
         return max(self.childs, key=lambda c: c.ucb1(total_visits, EXPLORATION_CONSTANT))
 
     def is_terminal(self):
-        return check_game_end(self.battle_state)
+        return self.battle_state.check_game_end()
 
 
 if __name__ == "__main_":

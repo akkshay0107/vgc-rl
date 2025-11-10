@@ -37,16 +37,16 @@ class Encoder:
 
         pokemon_row[9] = pokemon._current_hp if pokemon._current_hp is not None else 0
 
-        stats = ["atk", "def", "spa", "spd", "spe"]
+        stats = ["hp","atk", "def", "spa", "spd", "spe"]
         for i, stat in enumerate(stats):
             pokemon_row[10 + i] = pokemon.base_stats[stat]
 
         boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
         for i, boost in enumerate(boosts):
-            pokemon_row[15 + i] = pokemon.boosts[boost]
+            pokemon_row[16 + i] = pokemon.boosts[boost]
 
-        pokemon_row[22] = pokemon.protect_counter
-        pokemon_row[23] = prev_move_failed = 0 # TODO: implement this (not tracked in poke-env)
+        pokemon_row[23] = pokemon.protect_counter
+        pokemon_row[24] = prev_move_failed = 0 # TODO: implement this (not tracked in poke-env)
 
     def encode_battle_state(self, battle: DoubleBattle, state: torch.Tensor):
         """
