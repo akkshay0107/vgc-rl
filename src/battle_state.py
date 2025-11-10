@@ -22,8 +22,9 @@ class BattleState:
         Col 9 - current HP stat
         Col [10-15] - base stats
         Col [16-22] - stat stages (all 6 base stars excluding HP + accuracy and evasion)
-        Col 23 - protect counter
-        Col 24 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
+        Col [23-26] - pp for each of the 4 moves
+        Col 27 - protect counter
+        Col 28 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
 
     cols for field effects (first 5 are global, 6 and 7th are local, value of 0 means inactive)
         also stores some team level counters
@@ -36,11 +37,11 @@ class BattleState:
         Col 6 - aurora veil turns remaining
         Col 7 - number of fainted pokemon in the team
         Col 8 - rage fist stacks (0 if no annihilape in the team)
-        Col [9-21] - padding using 0 (future space to expand ??)
+        Col [9-28] - padding using 0 (future space to expand ??)
     """
 
     def __init__(self):
-        self.state = torch.zeros((2, 5, 25))
+        self.state = torch.zeros((2, 5, 29))
         self.prob = 1.0
 
     def check_game_end(self) -> bool:
