@@ -56,7 +56,7 @@ class Sandbox:
         None if less than one active pokemon
         """
         slice = self.battle_state.state[player]
-        switches = [i for i in range(2, 4) if slice[i, 9] > 0]
+        switches = [i for i in range(3, 5) if slice[i, 9] > 0] # Benched pokemon are rows 3 & 4, right?
         tera_burnt = int(slice[0, 9].item())
 
         pid1 = int(slice[1, 0].item())

@@ -50,6 +50,7 @@ class Encoder:
 
         pokemon_row[27] = pokemon.protect_counter
         pokemon_row[28] = prev_move_failed = 0  # TODO: implement this (not tracked in poke-env)
+        pokemon_row[29] = last_move_used = 0 # Added this for new BattleState
 
     def encode_battle_state(self, battle: DoubleBattle, state: torch.Tensor):
         """
@@ -57,7 +58,7 @@ class Encoder:
 
         Args:
             battle (Battle): The battle object from poke-env.
-            state (torch.Tensor): The 2x5x22 tensor to be filled.
+            state (torch.Tensor): The 2x5x30 tensor to be filled.
         """
         state.zero_()  # Reset tensor to zeros
 
@@ -125,7 +126,7 @@ class Encoder:
 
         p1_fainted_count = 0
         p1_rage_fist_stacks = 0  # TODO: calculate this somehow
-        active_slot, bench_slot = 0, 2
+        active_slot, bench_slot = 1, 3 # Active 1-2, Benched 3-4
 
         for mon in battle.team.values():
             if mon.active:
@@ -142,7 +143,7 @@ class Encoder:
 
         p2_fainted_count = 0
         p2_rage_fist_stacks = 0  # TODO: calculate this somehow
-        active_slot, bench_slot = 0, 2
+        active_slot, bench_slot = 1, 3 # Active 1-2, Benched 3-4
 
         for mon in battle.opponent_team.values():
             if mon.active:

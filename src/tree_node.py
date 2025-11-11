@@ -59,10 +59,10 @@ class TreeNode:
             self.parent.back_propagate(result)
 
     def best_child(self):
-        total_visits = self.visits if not self.parent else self.parent.visits
+        total_visits = self.visits # This node is the parent node
         return max(self.childs, key=lambda c: c.ucb1(total_visits, EXPLORATION_CONSTANT))
 
 
-if __name__ == "__main_":
+if __name__ == "__main__":
     # run tests here
     pass
