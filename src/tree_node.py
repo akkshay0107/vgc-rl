@@ -8,13 +8,13 @@ EXPLORATION_CONSTANT = math.sqrt(2)
 
 
 class TreeNode:
-    def __init__(self, parent=None, battle_state=BattleState()) -> None:
+    def __init__(self, parent=None, battle_state=None) -> None:
         self.parent = parent
         self.childs = []
         self.visits = 0
         self.value = 0.0
-        self.battle_state = battle_state
-        self.moves = Sandbox(self.battle_state).get_moves() # generator over moves
+        self.battle_state = battle_state if battle_state is not None else BattleState()
+        self.moves = Sandbox(self.battle_state).get_moves()  # generator over moves
         self.action = -1
         self.exhausted = False  # Track if moves generator is exhausted
 
@@ -24,7 +24,7 @@ class TreeNode:
         return (self.value / self.visits) + c * math.sqrt(math.log(N) / self.visits)
 
     def expand(self):
-        if self.exhausted:
+        if self.exhausted or self.battle_state.check_game_end():
             return None
         try:
             action = next(self.moves)
@@ -47,6 +47,8 @@ class TreeNode:
                 break
             action = random.choice(moves)
             current_state = box.simulate_turn(action)
+            if current_state.check_game_end():
+                break
 
         return pseudo_eval(current_state)
 
@@ -59,9 +61,6 @@ class TreeNode:
     def best_child(self):
         total_visits = self.visits if not self.parent else self.parent.visits
         return max(self.childs, key=lambda c: c.ucb1(total_visits, EXPLORATION_CONSTANT))
-
-    def is_terminal(self):
-        return self.battle_state.check_game_end()
 
 
 if __name__ == "__main_":
