@@ -29,7 +29,7 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         account_configuration1: Optional[AccountConfiguration] = None,
         account_configuration2: Optional[AccountConfiguration] = None,
         avatar: Optional[int] = None,
-        battle_format: str = "gen8randombattle",
+        battle_format: str = "gen9vgc2025regh",
         log_level: Optional[int] = None,
         save_replays: Union[bool, str] = False,
         server_configuration: Optional[ServerConfiguration] = LocalhostServerConfiguration,
@@ -83,9 +83,15 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         The action is a list in doubles, and the individual action mapping is
         as follows, where each 5-long range for a move corresponds to a
         different target (-2, -1, 0, 1, 2):
-        element = -2: default
-        element = -1: forfeit
-        element = 0: pass
+        -2 = default target
+        -1 = self
+        0 = ally
+        1 = opponent 1
+        2 = opponent 2
+
+        0 element = -2: default
+        0 element = -1: forfeit
+        0 element = 0: pass
         1 <= element <= 6: switch
         7 <= element <= 11: move 1
         12 <= element <= 16: move 2
