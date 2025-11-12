@@ -21,7 +21,8 @@ class RLPlayer(Player):
         action_mask = self.get_action_mask(battle)
         with torch.no_grad():
             obs_tensor = torch.as_tensor(obs, device=self.policy.device).unsqueeze(0)
-            action_pair_np, _, _ = self.policy.forward(obs_tensor, action_mask)
+            action_mask_tensor = action_mask.unsqueeze(0)
+            action_pair_np, _, _ = self.policy.forward(obs_tensor, action_mask_tensor)
         return Gen9VGCEnv.action_to_order(action_pair_np, battle)
 
     def get_observation(self, battle: DoubleBattle):

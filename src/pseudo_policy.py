@@ -62,8 +62,6 @@ class PseudoPolicy(nn.Module):
                 mask2[b, idx[b]] = 0
             if 26 < idx[b] <= 46:  # Tera range for mon 1
                 mask2[b, 27:47] = 0
-            if idx[b] == 0:  # Pass
-                mask2[b, 1:] = 0  # Only allow pass
         mask2 = (mask2 == 0)
         logits[:, 1, :].masked_fill_(mask2.to(self.device), float('-inf'))
 
