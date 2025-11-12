@@ -1,7 +1,7 @@
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import Player, DefaultBattleOrder
 from encoder import Encoder, BATTLE_STATE_DIMS
-from env import Gen9VGCEnv
+from gen9vgcenv import Gen9VGCEnv
 from teams import RandomTeamFromPool
 import torch
 
