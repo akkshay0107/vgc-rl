@@ -27,3 +27,7 @@ class RLPlayer(Player):
         obs = torch.Tensor(BATTLE_STATE_DIMS)
         Encoder.encode_battle_state(battle, obs)
         return obs
+
+    def teampreview(self, battle: AbstractBattle) -> str:
+        # defaults to random team preview
+        return super().teampreview(battle)
