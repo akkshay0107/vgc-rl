@@ -233,7 +233,7 @@ class Encoder:
                 actions = [0]
             elif all(battle.force_switch) and len(battle.available_switches[0]) == 1:
                 actions = switch_space + [0]
-            elif battle.teampreview or active_mon is None:
+            elif battle.teampreview or active_mon is None or battle.force_switch[pos]:
                 actions = switch_space
             else:
                 # Build move action indices

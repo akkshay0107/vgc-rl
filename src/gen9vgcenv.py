@@ -33,7 +33,7 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         log_level: Optional[int] = None,
         save_replays: Union[bool, str] = False,
         server_configuration: Optional[ServerConfiguration] = LocalhostServerConfiguration,
-        accept_open_team_sheet: Optional[bool] = False,
+        accept_open_team_sheet: Optional[bool] = True,
         start_timer_on_battle_start: bool = False,
         start_listening: bool = True,
         open_timeout: Optional[float] = 10.0,
