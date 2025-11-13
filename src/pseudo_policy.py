@@ -1,13 +1,6 @@
 import torch
 import torch.nn as nn
-
-# Define action space parameters (from gen9vgcenv.py)
-NUM_SWITCHES = 6
-NUM_MOVES = 4
-NUM_TARGETS = 5
-NUM_GIMMICKS = 1  # Tera
-ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
-
+from encoder import ACT_SIZE
 
 class PseudoPolicy(nn.Module):
     def __init__(self, observation_dim, action_dim, hidden_size=128):

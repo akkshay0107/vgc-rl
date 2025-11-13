@@ -2,9 +2,14 @@ import torch
 from poke_env.battle import AbstractBattle, DoubleBattle, SideCondition, Weather, Field, Effect
 from poke_env.battle.pokemon import Pokemon
 from lookups import POKEMON
-from pseudo_policy import ACT_SIZE
 
 BATTLE_STATE_DIMS = (2, 5, 30)
+# Define action space parameters (from gen9vgcenv.py)
+NUM_SWITCHES = 6
+NUM_MOVES = 4
+NUM_TARGETS = 5
+NUM_GIMMICKS = 1  # Tera
+ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
 
 
 class Encoder:
@@ -171,7 +176,7 @@ class Encoder:
 
         p1_fainted_count = 0
         p1_rage_fist_stacks = 0  # TODO: calculate this somehow
-        active_slot, bench_slot = 1, 3  # Active 1-2, Benched 3-4
+        active_slot, bench_slot = 1, 4
 
         for mon in battle.team.values():
             if mon.active:
@@ -179,7 +184,7 @@ class Encoder:
                 active_slot += 1
             else:
                 Encoder._encode_pokemon(mon, state[0, bench_slot])
-                bench_slot += 1
+                bench_slot -= 1
                 if mon.fainted:
                     p1_fainted_count += 1
 
@@ -188,7 +193,7 @@ class Encoder:
 
         p2_fainted_count = 0
         p2_rage_fist_stacks = 0  # TODO: calculate this somehow
-        active_slot, bench_slot = 1, 3  # Active 1-2, Benched 3-4
+        active_slot, bench_slot = 1, 4
 
         for mon in battle.opponent_team.values():
             if mon.active:
@@ -196,13 +201,16 @@ class Encoder:
                 active_slot += 1
             else:
                 Encoder._encode_pokemon(mon, state[1, bench_slot])
-                bench_slot += 1
+                bench_slot -= 1
                 if mon.fainted:
                     p2_fainted_count += 1
 
         state[1, 0, 7] = p2_fainted_count
         state[1, 0, 8] = p2_rage_fist_stacks
 
+    # TODO: fix the action mask to work
+    # as of right now, it fails to handle the possibility of a forced switch out
+    # reproducible example is torkoal getting switched out by eject pack by arcanine-h on entry
     @staticmethod
     def get_action_mask(battle: AbstractBattle):
         """

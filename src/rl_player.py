@@ -11,21 +11,24 @@ class RLPlayer(Player):
         super().__init__(*args, **kwargs)
         self.policy = policy
 
-    def choose_move(self, battle: AbstractBattle):
-        assert isinstance(battle, DoubleBattle)
-        if battle._wait:
-            return DefaultBattleOrder()
+    def _get_action(self, battle: AbstractBattle):
         obs = self.get_observation(battle)
         action_mask = Encoder.get_action_mask(battle)
         with torch.no_grad():
             obs_tensor = torch.as_tensor(obs, device=self.policy.device).unsqueeze(0)
             action_mask_tensor = action_mask.unsqueeze(0)
             action_pair_np, _, _ = self.policy.forward(obs_tensor, action_mask_tensor)
-        return Gen9VGCEnv.action_to_order(action_pair_np, battle)
+        return action_pair_np[0]
+
+    def choose_move(self, battle: AbstractBattle):
+        assert isinstance(battle, DoubleBattle)
+        if battle._wait:
+            return DefaultBattleOrder()
+        return Gen9VGCEnv.action_to_order(self._get_action(battle), battle)
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        obs = torch.Tensor(BATTLE_STATE_DIMS)
+        obs = torch.zeros(BATTLE_STATE_DIMS, dtype=torch.float32)
         Encoder.encode_battle_state(battle, obs)
         return obs
 

@@ -30,6 +30,6 @@ class SimEnv(Gen9VGCEnv):
 
     def embed_battle(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        obs = torch.Tensor(BATTLE_STATE_DIMS)
+        obs = torch.zeros(BATTLE_STATE_DIMS, dtype=torch.float32)
         Encoder.encode_battle_state(battle, obs)
         return obs
