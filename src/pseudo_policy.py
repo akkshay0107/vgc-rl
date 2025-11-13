@@ -18,7 +18,7 @@ class PseudoPolicy(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, 2 * action_dim)
+            nn.Linear(hidden_size, 2 * action_dim),
         )
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(self.device)
@@ -41,8 +41,8 @@ class PseudoPolicy(nn.Module):
 
         # --- Masking logic ---
         # action_mask: shape (batch_size, 2, action_dim), values: 1 (legal), 0 (illegal)
-        mask = (action_mask == 0)
-        logits = logits.masked_fill(mask.to(self.device), float('-inf'))
+        mask = action_mask == 0
+        logits = logits.masked_fill(mask.to(self.device), float("-inf"))
 
         # Distribution for both pokemon
         cat1 = torch.distributions.Categorical(logits=logits[:, 0, :])  # (B, A)
@@ -62,11 +62,18 @@ class PseudoPolicy(nn.Module):
                 mask2[b, idx[b]] = 0
             if 26 < idx[b] <= 46:  # Tera range for mon 1
                 mask2[b, 27:47] = 0
-        mask2 = (mask2 == 0)
-        logits[:, 1, :].masked_fill_(mask2.to(self.device), float('-inf'))
+        mask2 = mask2 == 0
+        logits[:, 1, :].masked_fill_(mask2.to(self.device), float("-inf"))
 
         cat2 = torch.distributions.Categorical(logits=logits[:, 1, :])
         action2 = cat2.sample()
 
         actions = torch.stack([action1, action2], dim=1).cpu().numpy()
         return actions, cat1, cat2
+
+
+if __name__ == "__main__":
+    net = PseudoPolicy(observation_dim=300, action_dim=ACT_SIZE)
+    action_mask = torch.ones((1, 2, ACT_SIZE))
+    res = net.forward(torch.rand((1, 2, 5, 30)), action_mask)
+    print(res)
