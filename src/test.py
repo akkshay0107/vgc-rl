@@ -152,9 +152,11 @@ async def main():
     player_1 = ObservingRandomPlayer(
         account_configuration= player1_config, battle_format="gen9vgc2025regh", team=team1, max_concurrent_battles=10
     )
-    player_2 = ObservingRandomPlayer(
+    player_2 = RandomPlayer(
         account_configuration= player2_config, battle_format="gen9vgc2025regh", team=team2, max_concurrent_battles=10
     )
     await player_1.battle_against(player_2, n_battles=1)
 
+print("starting test...")
 asyncio.run(main())
+print("ending test...")
