@@ -14,29 +14,17 @@ class ExtendedBattle(DoubleBattle):
         self.opponent_move_failed = {}  # Maps opponent pokemon identifier to failed status 
       
     def parse_message(self, split_message):  
-        # print("Parsing message:", split_message, file=sys.stderr)
         super().parse_message(split_message)
         if len(split_message) > 1 and (split_message[1] == "move" or split_message[1] == "cant"):  
             stomping_tantrum_fail = False
-            # print("parsing normal message", split_message, file=sys.stderr)
-            # need to include Parsing message: ['', 'cant', 'p2b: Ursaluna', 'flinch'] <- ursaluna move failed due to flinch
-            # does this count? 
-            # Parsing message: ['', 'move', 'p1b: Gholdengo', 'Shadow Ball', 'p2a: Ursaluna']
-            # Parsing message: ['', '-immune', 'p2a: Ursaluna']
-            # immune is going to have a couple of quirks involved
-            # 1. it can be due to type immunity (e.g., ground move on flying type) -> this one triggers move failure
-            # 2. it can be due to ability immunity (e.g., intimidate on gholdengo) -> this should not trigger move failure
-
             for suffix in ["[miss]", "[still]", "[notarget]"]:  
                 if suffix in split_message:  
                     stomping_tantrum_fail = True
-                    # print("parsing normal failed message", split_message, file=sys.stderr)
                     break  
             if split_message[1] == "cant":  
                 stomping_tantrum_fail = True
                 print("parsing cant message", split_message, file=sys.stderr)
             
-            # if split_message[1] == "-immune":
               
             if len(split_message) > 2:  
                 pokemon_id = split_message[2] 
@@ -56,7 +44,6 @@ class ExtendedBattle(DoubleBattle):
                             self.opponent_move_failed[normalized_id] = stomping_tantrum_fail
         elif len(split_message) > 1 and split_message[1] == "-immune":  
             stomping_tantrum_fail = False
-            # print("parsing -immune message", split_message, file=sys.stderr)
             if len(split_message) >= 3:  
                 pokemon_id = split_message[2]  
                 player_identifier = pokemon_id[:2]  
@@ -68,12 +55,8 @@ class ExtendedBattle(DoubleBattle):
                 
                 is_ability_immunity = any("[from] ability:" in part or "[from]ability:" in part   
                                         for part in split_message[3:])  
-                # print("is ability immunity:", is_ability_immunity, file=sys.stderr)
                 if not is_ability_immunity:  
-                    # print("recording move failure due to -immune", file=sys.stderr)
                     current_events = self._current_observation.events  
-                    # print("current events:", current_events, file=sys.stderr)
-                    # if len(current_events) >= 2:  
                     prev_message = current_events[-2] 
                     print("previous message:", prev_message, file=sys.stderr)
                     if len(prev_message) > 1 and prev_message[1] == "move":  
