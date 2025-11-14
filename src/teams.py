@@ -1,5 +1,6 @@
-import numpy as np
+import random
 from poke_env.teambuilder import Teambuilder
+
 
 class RandomTeamFromPool(Teambuilder):
     def __init__(self, teams):
@@ -11,7 +12,7 @@ class RandomTeamFromPool(Teambuilder):
             self.packed_teams.append(packed_team)
 
     def yield_team(self):
-        return np.random.choice(self.packed_teams)
+        return random.choice(self.packed_teams)
 
 
 if __name__ == "__main__":
