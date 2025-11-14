@@ -208,9 +208,6 @@ class Encoder:
         state[1, 0, 7] = p2_fainted_count
         state[1, 0, 8] = p2_rage_fist_stacks
 
-    # TODO: fix the action mask to work
-    # as of right now, it fails to handle the possibility of a forced switch out
-    # reproducible example is torkoal getting switched out by eject pack by arcanine-h on entry
     @staticmethod
     def get_action_mask(battle: AbstractBattle):
         """
@@ -219,8 +216,8 @@ class Encoder:
         """
         assert isinstance(battle, DoubleBattle)
 
+        # direct copy of vgc-bench action mask
         def single_action_mask(battle: DoubleBattle, pos: int) -> list[int]:
-            act_len = ACT_SIZE  # For your action index size
             switch_space = [
                 i + 1
                 for i, pokemon in enumerate(battle.team.values())
@@ -228,29 +225,20 @@ class Encoder:
                 and pokemon.base_species in [p.base_species for p in battle.available_switches[pos]]
             ]
             active_mon = battle.active_pokemon[pos]
-            # "Pass" or forced switch handling
             if battle._wait or (any(battle.force_switch) and not battle.force_switch[pos]):
                 actions = [0]
             elif all(battle.force_switch) and len(battle.available_switches[0]) == 1:
                 actions = switch_space + [0]
-            elif battle.teampreview or active_mon is None or battle.force_switch[pos]:
+            elif battle.teampreview or active_mon is None:
                 actions = switch_space
             else:
-                # Build move action indices
                 move_spaces = [
-                    [
-                        7 + 5 * i + j + 2
-                        for j in battle.get_possible_showdown_targets(move, active_mon)
-                    ]
+                    [7 + 5 * i + j + 2 for j in battle.get_possible_showdown_targets(move, active_mon)]
                     for i, move in enumerate(active_mon.moves.values())
                     if move.id in [m.id for m in battle.available_moves[pos]]
                 ]
                 move_space = [i for s in move_spaces for i in s]
-                # Terastallization
-                tera_space = [
-                    i + 20 for i in move_space if getattr(battle, "can_tera", [False, False])[pos]
-                ]
-                # Struggle/recharge
+                tera_space = [i + 20 for i in move_space if battle.can_tera[pos]]
                 if (
                     not move_space
                     and len(battle.available_moves[pos]) == 1
@@ -259,7 +247,7 @@ class Encoder:
                     move_space = [9]
                 actions = switch_space + move_space + tera_space
             actions = actions or [0]
-            action_mask = [int(i in actions) for i in range(act_len)]
+            action_mask = [int(i in actions) for i in range(ACT_SIZE)]
             return action_mask
 
         # Stack for both active Pokémon (positions 0 and 1)

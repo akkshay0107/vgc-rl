@@ -6,7 +6,10 @@ from gen9vgcenv import Gen9VGCEnv
 from poke_env.battle import AbstractBattle, DoubleBattle
 from teams import RandomTeamFromPool
 
-
+# TODO: fix the environment to work
+# PROBLEMS:
+# environment hangs when torkoal gets switched out by eject pack before move selection for turn 1
+# environment crashes when game ends on struggle (assertion fail on battle.finished in PokeEnv)
 class SimEnv(Gen9VGCEnv):
     def __init__(self, *args, **kwargs):
         teams_dir = "./teams"
