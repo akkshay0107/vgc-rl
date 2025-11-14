@@ -44,7 +44,7 @@ for episode in range(num_episodes):
         # print(action_mask_batch.shape)
 
         with torch.no_grad():
-            sampled_actions, _, _ = policy.forward(obs_batch, action_mask_batch)
+            sampled_actions = policy.forward(obs_batch, action_mask_batch)
 
         actions[env.agent1.username] = sampled_actions[0]
         actions[env.agent2.username] = sampled_actions[1]

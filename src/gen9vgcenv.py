@@ -4,7 +4,7 @@ import numpy as np
 import numpy.typing as npt
 from gymnasium.spaces import MultiDiscrete
 
-from poke_env.battle import DoubleBattle, Move, Pokemon
+from poke_env.battle import DoubleBattle, Pokemon
 from poke_env.environment.env import ObsType, PokeEnv
 from poke_env.player.battle_order import (
     BattleOrder,
@@ -12,6 +12,7 @@ from poke_env.player.battle_order import (
     DoubleBattleOrder,
     ForfeitBattleOrder,
     SingleBattleOrder,
+    PassBattleOrder,
 )
 from poke_env.player.player import Player
 from poke_env.ps_client import (
@@ -21,7 +22,8 @@ from poke_env.ps_client import (
 )
 from poke_env.teambuilder import Teambuilder
 
-# modified DoublesEnv from poke-env
+
+# modified Gen9VGCEnv from poke-env
 # to remove all other gimmicks but tera
 class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
     def __init__(
@@ -34,11 +36,12 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         save_replays: Union[bool, str] = False,
         server_configuration: Optional[ServerConfiguration] = LocalhostServerConfiguration,
         accept_open_team_sheet: Optional[bool] = True,
-        start_timer_on_battle_start: bool = False,
+        start_timer_on_battle_start: bool = True,
         start_listening: bool = True,
         open_timeout: Optional[float] = 10.0,
         ping_interval: Optional[float] = 20.0,
         ping_timeout: Optional[float] = 20.0,
+        challenge_timeout: Optional[float] = 60.0,
         team: Optional[Union[str, Teambuilder]] = None,
         fake: bool = False,
         strict: bool = True,
@@ -57,6 +60,7 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
             open_timeout=open_timeout,
             ping_interval=ping_interval,
             ping_timeout=ping_timeout,
+            challenge_timeout=challenge_timeout,
             team=team,
             fake=fake,
             strict=strict,
@@ -77,121 +81,127 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         fake: bool = False,
         strict: bool = True,
     ) -> BattleOrder:
-        """
-        Returns the BattleOrder relative to the given action.
+        """Convert an action array into a :class:`BattleOrder`.
 
         The action is a list in doubles, and the individual action mapping is
         as follows, where each 5-long range for a move corresponds to a
-        different target (-2, -1, 0, 1, 2):
-        -2 = default target
+        different target (-2, -1, 0, 1, 2).
+        -2 = default
         -1 = self
         0 = ally
-        1 = opponent 1
-        2 = opponent 2
+        1 = opponent1
+        2 = opponent2
 
-        0 element = -2: default
-        0 element = -1: forfeit
-        0 element = 0: pass
+        element = -2: default
+        element = -1: forfeit
+        element = 0: pass
         1 <= element <= 6: switch
         7 <= element <= 11: move 1
         12 <= element <= 16: move 2
         17 <= element <= 21: move 3
         22 <= element <= 26: move 4
-        27 <= element <= 31: move 1 and tera
-        32 <= element <= 36: move 2 and tera
-        37 <= element <= 41: move 3 and tera
-        42 <= element <= 46: move 4 and tera
+        27 <= element <= 31: move 1 and terastallize
+        32 <= element <= 36: move 2 and terastallize
+        37 <= element <= 41: move 3 and terastallize
+        42 <= element <= 46: move 4 and terastallize
 
         :param action: The action to take.
         :type action: ndarray[int64]
         :param battle: The current battle state
         :type battle: AbstractBattle
+        :param fake: If ``True``, return a best-effort order even if it would be
+            illegal.
+        :type fake: bool
+        :param strict: If ``True``, raise an error when the action is illegal;
+            otherwise return a default order.
+        :type strict: bool
 
         :return: The battle order for the given action in context of the current battle.
         :rtype: BattleOrder
 
         """
+        if action[0] == -2 and action[1] == -2:
+            return DefaultBattleOrder()
+        elif action[0] == -1 or action[1] == -1:
+            return ForfeitBattleOrder()
         try:
-            if action[0] == -2 or action[1] == -2:
-                return DefaultBattleOrder()
-            elif action[0] == -1 or action[1] == -1:
-                return ForfeitBattleOrder()
-            if not fake:
-                assert not (
-                    len(battle.available_switches[0]) == 1
-                    and battle.force_switch == [True, True]
-                    and 1 <= action[0] <= 6
-                    and 1 <= action[1] <= 6
-                ), "invalid action"
             order1 = Gen9VGCEnv._action_to_order_individual(action[0], battle, fake, 0)
-            order2 = Gen9VGCEnv._action_to_order_individual(action[1], battle, fake, 1)
-            joined_orders = DoubleBattleOrder.join_orders(
-                [order1] if order1 is not None else [],
-                [order2] if order2 is not None else [],
-            )
-            if not fake:
-                assert len(joined_orders) == 1, "invalid action"
-            elif not joined_orders:
-                return DefaultBattleOrder()
-            return joined_orders[0]
-        except AssertionError as e:
-            if not strict and str(e) == "invalid action":
-                return DefaultBattleOrder()
-            else:
+        except ValueError as e:
+            if strict:
                 raise e
+            else:
+                if battle.logger is not None:
+                    battle.logger.warning(str(e) + " Defaulting to random move.")
+                order = Player.choose_random_doubles_move(battle)
+                order1 = order.first_order if not isinstance(order, DefaultBattleOrder) else order
+        try:
+            order2 = Gen9VGCEnv._action_to_order_individual(action[1], battle, fake, 1)
+        except ValueError as e:
+            if strict:
+                raise e
+            else:
+                if battle.logger is not None:
+                    battle.logger.warning(str(e) + " Defaulting to random move.")
+                order = Player.choose_random_doubles_move(battle)
+                order2 = order.second_order if not isinstance(order, DefaultBattleOrder) else order
+        joined_orders = DoubleBattleOrder.join_orders([order1], [order2])
+        if not joined_orders:
+            error_msg = (
+                f"Invalid action {action} from player {battle.player_username} "
+                f"in battle {battle.battle_tag} - converted orders {order1} "
+                f"and {order2} are incompatible!"
+            )
+            if strict:
+                raise ValueError(error_msg)
+            else:
+                if battle.logger is not None:
+                    battle.logger.warning(error_msg + " Defaulting to random move.")
+                return Player.choose_random_doubles_move(battle)
+        else:
+            return joined_orders[0]
 
     @staticmethod
     def _action_to_order_individual(
         action: np.int64, battle: DoubleBattle, fake: bool, pos: int
-    ) -> Optional[SingleBattleOrder]:
-        assert battle.force_switch != [[False, True], [True, False]][pos] or action == 0, (
-            "invalid action"
-        )
-        if action == 0:
-            order = None
+    ) -> SingleBattleOrder:
+        if action == -2:
+            return DefaultBattleOrder()
+        elif action == 0:
+            order: SingleBattleOrder = PassBattleOrder()
         elif action < 7:
             order = Player.create_order(list(battle.team.values())[action - 1])
-            if not fake:
-                assert not battle.trapped[pos], "invalid action"
-                assert isinstance(order.order, Pokemon)
-                assert order.order.base_species in [
-                    p.base_species for p in battle.available_switches[pos]
-                ], "invalid action"
         else:
             active_mon = battle.active_pokemon[pos]
-            if not fake:
-                assert not battle.force_switch[pos], "invalid action"
-                assert active_mon is not None, "invalid action"
-            elif active_mon is None:
-                return DefaultBattleOrder()
+            if active_mon is None:
+                raise ValueError(
+                    f"Invalid order from player {battle.player_username} "
+                    f"in battle {battle.battle_tag} at position {pos} - action "
+                    f"specifies a move, but battle.active_pokemon is None!"
+                )
             mvs = (
                 battle.available_moves[pos]
                 if len(battle.available_moves[pos]) == 1
                 and battle.available_moves[pos][0].id in ["struggle", "recharge"]
                 else list(active_mon.moves.values())
             )
-            if not fake:
-                assert (action - 7) % 20 // 5 in range(len(mvs)), "invalid action"
-            elif (action - 7) % 20 // 5 not in range(len(mvs)):
-                return DefaultBattleOrder()
+            if (action - 7) % 20 // 5 not in range(len(mvs)):
+                raise ValueError(
+                    f"Invalid action {action} from player {battle.player_username} "
+                    f"in battle {battle.battle_tag} at position {pos} - action "
+                    f"specifies a move but the move index {(action - 7) % 20 // 5} "
+                    f"is out of bounds for available moves {mvs}!"
+                )
             order = Player.create_order(
                 mvs[(action - 7) % 20 // 5],
                 move_target=(action.item() - 7) % 5 - 2,
                 terastallize=(action - 7) // 20 == 1,
             )
-            if not fake:
-                assert isinstance(order.order, Move)
-                assert order.order.id in [m.id for m in battle.available_moves[pos]], (
-                    "invalid action"
-                )
-                move = [m for m in battle.available_moves[pos] if m.id == order.order.id][0]
-                assert order.move_target in battle.get_possible_showdown_targets(
-                    move, active_mon
-                ), "invalid action"
-                assert not order.mega or battle.can_mega_evolve[pos], "invalid action"
-                assert not order.z_move or battle.can_z_move[pos], "invalid action"
-                assert not order.dynamax or battle.can_dynamax[pos], "invalid action"
-                assert not order.terastallize or battle.can_tera[pos] is not False, "invalid action"
+        if not fake and str(order) not in [str(o) for o in battle.valid_orders[pos]]:
+            raise ValueError(
+                f"Invalid action {action} from player {battle.player_username} "
+                f"in battle {battle.battle_tag} at position {pos} - order {order} "
+                f"not in action space {[str(o) for o in battle.valid_orders[pos]]}!"
+            )
         return order
 
     @staticmethod
@@ -201,98 +211,107 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         fake: bool = False,
         strict: bool = True,
     ) -> npt.NDArray[np.int64]:
-        """
-        Returns the action relative to the given BattleOrder.
+        """Convert a :class:`BattleOrder` into an action array.
 
         :param order: The order to take.
         :type order: BattleOrder
         :param battle: The current battle state
         :type battle: AbstractBattle
+        :param fake: If ``True``, return a best-effort action even if it would be
+            illegal.
+        :type fake: bool
+        :param strict: If ``True``, raise an error when the order is illegal;
+            otherwise return default.
+        :type strict: bool
 
         :return: The action for the given battle order in context of the current battle.
         :rtype: ndarray[int64]
         """
-        try:
-            if isinstance(order, DefaultBattleOrder):
-                return np.array([-2, -2])
-            elif isinstance(order, ForfeitBattleOrder):
-                return np.array([-1, -1])
-            assert isinstance(order, DoubleBattleOrder)
-            if not fake:
-                assert not (
-                    len(battle.available_switches[0]) == 1
-                    and battle.force_switch == [True, True]
-                    and order.first_order is not None
-                    and isinstance(order.first_order.order, Pokemon)
-                    and order.second_order is not None
-                    and isinstance(order.second_order.order, Pokemon)
-                ), "invalid order"
-            action1 = Gen9VGCEnv._order_to_action_individual(order.first_order, battle, fake, 0)
-            action2 = Gen9VGCEnv._order_to_action_individual(order.second_order, battle, fake, 1)
-            return np.array([action1, action2])
-        except AssertionError as e:
-            if not strict and str(e) == "invalid order":
-                return np.array([-2, -2])
+        if isinstance(order, DefaultBattleOrder):
+            return np.array([-2, -2])
+        elif isinstance(order, ForfeitBattleOrder):
+            return np.array([-1, -1])
+        assert isinstance(order, DoubleBattleOrder)
+        joined_orders = DoubleBattleOrder.join_orders([order.first_order], [order.second_order])
+        if not fake and not joined_orders:
+            error_msg = (
+                f"Invalid order {order} from player {battle.player_username} "
+                f"in battle {battle.battle_tag} - orders are incompatible!"
+            )
+            if strict:
+                raise ValueError(str(error_msg) + " Defaulting to random move.")
             else:
+                if battle.logger is not None:
+                    battle.logger.warning(error_msg)
+                return Gen9VGCEnv.order_to_action(
+                    Player.choose_random_doubles_move(battle), battle, fake, strict
+                )
+        try:
+            action1 = Gen9VGCEnv._order_to_action_individual(order.first_order, battle, fake, 0)
+        except ValueError as e:
+            if strict:
                 raise e
+            else:
+                if battle.logger is not None:
+                    battle.logger.warning(str(e) + " Defaulting to random move.")
+                order = Player.choose_random_doubles_move(battle)
+                action1 = Gen9VGCEnv._order_to_action_individual(
+                    (order.first_order if not isinstance(order, DefaultBattleOrder) else order),
+                    battle,
+                    fake,
+                    0,
+                )
+        try:
+            action2 = Gen9VGCEnv._order_to_action_individual(order.second_order, battle, fake, 1)
+        except ValueError as e:
+            if strict:
+                raise e
+            else:
+                if battle.logger is not None:
+                    battle.logger.warning(str(e) + " Defaulting to random move.")
+                order = Player.choose_random_doubles_move(battle)
+                action2 = Gen9VGCEnv._order_to_action_individual(
+                    (order.second_order if not isinstance(order, DefaultBattleOrder) else order),
+                    battle,
+                    fake,
+                    1,
+                )
+        return np.array([action1, action2])
 
     @staticmethod
     def _order_to_action_individual(
-        order: Optional[SingleBattleOrder], battle: DoubleBattle, fake: bool, pos: int
+        order: SingleBattleOrder, battle: DoubleBattle, fake: bool, pos: int
     ) -> np.int64:
-        assert battle.force_switch != [[False, True], [True, False]][pos] or order is None, (
-            "invalid order"
-        )
-        if order is None:
-            action = 0
-        elif isinstance(order, DefaultBattleOrder):
-            action = -2
-        else:
-            assert isinstance(order, SingleBattleOrder)
-            assert not isinstance(order.order, str), "invalid order"
-            if isinstance(order.order, Pokemon):
-                if not fake:
-                    assert not battle.trapped[pos], "invalid order"
-                    assert order.order.base_species in [
-                        p.base_species for p in battle.available_switches[pos]
-                    ], "invalid order"
-                action = [p.base_species for p in battle.team.values()].index(
-                    order.order.base_species
-                ) + 1
+        if isinstance(order.order, str):
+            if isinstance(order, DefaultBattleOrder):
+                return np.int64(-2)
             else:
-                active_mon = battle.active_pokemon[pos]
-                if not fake:
-                    assert not battle.force_switch[pos], "invalid order"
-                    assert active_mon is not None, "invalid order"
-                elif active_mon is None:
-                    return np.int64(-2)
-                mvs = (
-                    battle.available_moves[pos]
-                    if len(battle.available_moves[pos]) == 1
-                    and battle.available_moves[pos][0].id in ["struggle", "recharge"]
-                    else list(active_mon.moves.values())
-                )
-                if not fake:
-                    assert order.order.id in [m.id for m in mvs], "invalid order"
-                action = [m.id for m in mvs].index(order.order.id)
-                target = order.move_target + 2
-                if order.terastallize:
-                    gimmick = 1
-                else:
-                    gimmick = 0
-                action = 1 + 6 + 5 * action + target + 20 * gimmick
-                if not fake:
-                    assert order.order.id in [m.id for m in battle.available_moves[pos]], (
-                        "invalid order"
-                    )
-                    move = [m for m in battle.available_moves[pos] if m.id == order.order.id][0]
-                    assert order.move_target in battle.get_possible_showdown_targets(
-                        move, active_mon
-                    ), "invalid order"
-                    assert not order.mega or battle.can_mega_evolve[pos], "invalid order"
-                    assert not order.z_move or battle.can_z_move[pos], "invalid order"
-                    assert not order.dynamax or battle.can_dynamax[pos], "invalid order"
-                    assert not order.terastallize or battle.can_tera[pos] is not False, (
-                        "invalid order"
-                    )
+                assert isinstance(order, PassBattleOrder)
+                return np.int64(0)
+        if not fake and str(order) not in [str(o) for o in battle.valid_orders[pos]]:
+            raise ValueError(
+                f"Invalid order from player {battle.player_username} in battle "
+                f"{battle.battle_tag} at position {pos} - order {order} not in "
+                f"action space {[str(o) for o in battle.valid_orders[pos]]}!"
+            )
+        if isinstance(order.order, Pokemon):
+            action = [p.base_species for p in battle.team.values()].index(
+                order.order.base_species
+            ) + 1
+        else:
+            active_mon = battle.active_pokemon[pos]
+            assert active_mon is not None
+            mvs = (
+                battle.available_moves[pos]
+                if len(battle.available_moves[pos]) == 1
+                and battle.available_moves[pos][0].id in ["struggle", "recharge"]
+                else list(active_mon.moves.values())
+            )
+            action = [m.id for m in mvs].index(order.order.id)
+            target = order.move_target + 2
+            if order.terastallize:
+                gimmick = 1
+            else:
+                gimmick = 0
+            action = 1 + 6 + 5 * action + target + 20 * gimmick
         return np.int64(action)
