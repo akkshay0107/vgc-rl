@@ -5,9 +5,7 @@ from teams import RandomTeamFromPool
 from pathlib import Path
 import asyncio
 
-# TODO : change this to inherit from Player
-# kept it this way just for testing local server setup
-class MCTSAgent(RandomPlayer):
+class MCTSAgent(Player):
     def __init__(
         self,
         account_configuration: Optional[AccountConfiguration] = None, *,
@@ -29,12 +27,6 @@ class MCTSAgent(RandomPlayer):
                 "ws://localhost:8000/showdown/websocket",
                 "https://play.pokemonshowdown.com/action.php?"
             )
-
-        # if account_configuration is None:
-        #     account_configuration = AccountConfiguration(
-        #         username="MCTSAgent",
-        #         password=None
-        #     )
 
         teams_dir = "./teams"
         team_files = [

@@ -7,7 +7,7 @@ import sys
 
 
 class Encoder:
-    def _get_pokemon_id(self, pokemon: Pokemon) -> int:
+    def _get_pokemon_info(self, pokemon: Pokemon) -> int:
         if not pokemon:
             return -1
 
@@ -18,7 +18,7 @@ class Encoder:
 
     def _encode_pokemon(self, pokemon: Pokemon | None, pokemon_row: torch.Tensor, battle: ExtendedBattle, opponent: bool = False):
         if pokemon is None:
-            pokemon_row[0] = -1 # set ID to -1 to imply unknown
+            pokemon_row[0] = -1  # set ID to -1 to imply unknown
             return
 
         pokemon_row[0] = self._get_pokemon_id(pokemon)
@@ -39,18 +39,21 @@ class Encoder:
 
         pokemon_row[9] = pokemon._current_hp if pokemon._current_hp is not None else 0
 
-        stats = ["atk", "def", "spa", "spd", "spe"]
+        stats = ["hp", "atk", "def", "spa", "spd", "spe"]
         for i, stat in enumerate(stats):
             pokemon_row[10 + i] = pokemon.base_stats[stat]
 
         boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
         for i, boost in enumerate(boosts):
-            pokemon_row[15 + i] = pokemon.boosts[boost]
+            pokemon_row[16 + i] = pokemon.boosts[boost]
+            
+        for i, move in enumerate(pokemon.moves):
+            pokemon_row[23 + i] = pokemon.moves[move].current_pp
 
-        pokemon_row[22] = pokemon.protect_counter
-        # pokemon_row[23] = prev_move_failed = 0 # TODO: implement this (not tracked in poke-env)
+        pokemon_row[27] = pokemon.protect_counter
+        pokemon_row[28] = 1 if battle.did_last_move_fail(pokemon, opponent) else 0
+        pokemon_row[29] = last_move_used = 0 # Added this for new BattleState
 
-        pokemon_row[23] = 1 if battle.did_last_move_fail(pokemon, opponent) else 0
 
     def encode_battle_state(self, battle: ExtendedBattle, state: torch.Tensor):
         """
@@ -58,7 +61,7 @@ class Encoder:
 
         Args:
             battle (Battle): The battle object from poke-env.
-            state (torch.Tensor): The 2x5x22 tensor to be filled.
+            state (torch.Tensor): The 2x5x30 tensor to be filled.
         """
         state.zero_()  # Reset tensor to zeros
 
@@ -77,9 +80,7 @@ class Encoder:
                 if grassy_terrain_start >= 0:
                     grassy_terrain_turns = 5 - (battle.turn - grassy_terrain_start)
                 elif psychic_terrain_start >= 0:
-                    psychic_terrain_turns = 5 - (
-                        battle.turn - psychic_terrain_start
-                    )
+                    psychic_terrain_turns = 5 - (battle.turn - psychic_terrain_start)
 
                 if trick_room_start >= 0:
                     trick_room_turns = 5 - (battle.turn - trick_room_start)
@@ -117,12 +118,8 @@ class Encoder:
         tailwind_turns = 0
         veil_turns = 0
         if battle.opponent_side_conditions:
-            tailwind_start = battle.opponent_side_conditions.get(
-                SideCondition.TAILWIND, -1
-            )
-            veil_start = battle.opponent_side_conditions.get(
-                SideCondition.AURORA_VEIL, -1
-            )
+            tailwind_start = battle.opponent_side_conditions.get(SideCondition.TAILWIND, -1)
+            veil_start = battle.opponent_side_conditions.get(SideCondition.AURORA_VEIL, -1)
             if tailwind_start >= 0:
                 tailwind_turns = 4 - (battle.turn - tailwind_start)
             if veil_start >= 0:
@@ -131,8 +128,9 @@ class Encoder:
         state[1, 0, 6] = veil_turns
 
         p1_fainted_count = 0
-        p1_rage_fist_stacks = 0 # TODO: calculate this somehow
-        active_slot, bench_slot = 0, 2
+        p1_rage_fist_stacks = 0  # TODO: calculate this somehow
+        active_slot, bench_slot = 1, 3 # Active 1-2, Benched 3-4
+
         for mon in battle.team.values():
             if mon.active:
                 self._encode_pokemon(mon, state[0, active_slot], battle)
@@ -147,8 +145,8 @@ class Encoder:
         state[0, 0, 8] = p1_rage_fist_stacks
 
         p2_fainted_count = 0
-        p2_rage_fist_stacks = 0 # TODO: calculate this somehow
-        active_slot, bench_slot = 0, 2
+        p2_rage_fist_stacks = 0  # TODO: calculate this somehow
+        active_slot, bench_slot = 1, 3 # Active 1-2, Benched 3-4
 
         for mon in battle.opponent_team.values():
             if mon.active:
