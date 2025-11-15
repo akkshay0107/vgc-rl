@@ -24,7 +24,7 @@ from poke_env.ps_client import (
 )
 from poke_env.teambuilder import Teambuilder
 
-from encoder import BATTLE_STATE_DIMS, Encoder
+from encoder import OBS_DIM, Encoder
 from teams import RandomTeamFromPool
 
 # modified Gen9VGCEnv from poke-env
@@ -352,6 +352,6 @@ class SimEnv(Gen9VGCEnv):
 
     def embed_battle(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        obs = torch.zeros(BATTLE_STATE_DIMS, dtype=torch.float32)
-        Encoder.encode_battle_state(battle, obs)
+        obs = torch.zeros(OBS_DIM, dtype=torch.float32)
+        # TODO: implement the actual battle encoding function
         return obs
