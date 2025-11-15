@@ -5,8 +5,20 @@ description = "A RL agent to play VGC in a competent manner"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "poke-env>=0.10.0",
+    "poke-env @ git+https://github.com/hsahovic/poke-env.git@master",
     "torch>=2.7.0",
+    "numpy>=1.21.6",
+    "gymnasium>=0.26.3",
+    "aiohttp>=3.8.1",
+    "autobahn>=22.7.1",
+    "websockets>=10.3",
+    "typing-extensions",
+    "orjson",
+    "requests",
+    "urllib3",
+    "idna",
+    "certifi",
+    "pettingzoo",
 ]
 
 [tool.pyright]

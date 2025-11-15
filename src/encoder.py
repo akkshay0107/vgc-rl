@@ -1,13 +1,61 @@
 import torch
-from poke_env.battle import DoubleBattle, SideCondition, Weather, Field, Effect
+from poke_env.battle import AbstractBattle, DoubleBattle, SideCondition, Weather, Field, Effect
 from poke_env.battle.pokemon import Pokemon
 from extended_battle import ExtendedBattle
 from lookups import POKEMON
 import sys
 
+BATTLE_STATE_DIMS = (2, 5, 30)
+# Define action space parameters (from gen9vgcenv.py)
+NUM_SWITCHES = 6
+NUM_MOVES = 4
+NUM_TARGETS = 5
+NUM_GIMMICKS = 1
+ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
+
 
 class Encoder:
-    def _get_pokemon_info(self, pokemon: Pokemon) -> int:
+    """
+    Description of embedded vector
+
+    2 channels - one for each player
+
+    5 rows - 1st row for field conditions on respective players side of the field
+                Next 4 rows for the state of each pokemon selected to play
+
+    30 cols for pokemons
+        Col 0 - pokemonID
+        Col 1 - primary typing
+        Col 2 - secondary typing
+        Col 3 - tera type (0 if tera not used else tera type)
+        Col 4 - item held / consumed or knocked off
+        Col 5 - non volatile status condition
+        Col [6-8] - taunt, encore, confusion status respectively (turns active)
+        Col 9 - current HP stat
+        Col [10-15] - base stats
+        Col [16-22] - stat stages (all 6 base stars excluding HP + accuracy and evasion)
+        Col [23-26] - pp for each of the 4 moves
+        Col 27 - protect counter
+        Col 28 - boolean that denotes whether the last turn missed or not (for stomping tantrum)
+        Col 29 - last move used (1 - 4)
+
+    cols for field effects (first 5 are global, 6 and 7th are local, value of 0 means inactive)
+        also stores some team level counters
+        Col 0 - trick room turns remaining
+        Col 1 - grassy terrain turns remaining
+        Col 2 - psy terrain turns remaining
+        Col 3 - sun turns remaining
+        Col 4 - rain turns remaining
+        Col 5 - tailwind turns remaining
+        Col 6 - aurora veil turns remaining
+        Col 7 - number of fainted pokemon in the team
+        Col 8 - rage fist stacks (0 if no annihilape in the team)
+        Col 9 - tera burnt or not
+        Col [10-29] - padding using 0 (future space to expand ??)
+    """
+
+    @staticmethod
+    def _get_pokemon_id(pokemon: Pokemon) -> int:
         if not pokemon:
             return -1
 
@@ -16,12 +64,13 @@ class Encoder:
         move_list_str = ",".join(move_ids)
         return POKEMON.get(move_list_str, -1)
 
-    def _encode_pokemon(self, pokemon: Pokemon | None, pokemon_row: torch.Tensor, battle: ExtendedBattle, opponent: bool = False):
+    @staticmethod
+    def _encode_pokemon(pokemon: Pokemon | None, pokemon_row: torch.Tensor):
         if pokemon is None:
             pokemon_row[0] = -1  # set ID to -1 to imply unknown
             return
 
-        pokemon_row[0] = self._get_pokemon_id(pokemon)
+        pokemon_row[0] = Encoder._get_pokemon_id(pokemon)
 
         pokemon_row[1] = pokemon.type_1.value
         pokemon_row[2] = 0 if pokemon.type_2 is None else pokemon.type_2.value
@@ -46,7 +95,7 @@ class Encoder:
         boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
         for i, boost in enumerate(boosts):
             pokemon_row[16 + i] = pokemon.boosts[boost]
-            
+
         for i, move in enumerate(pokemon.moves):
             pokemon_row[23 + i] = pokemon.moves[move].current_pp
 
@@ -129,15 +178,15 @@ class Encoder:
 
         p1_fainted_count = 0
         p1_rage_fist_stacks = 0  # TODO: calculate this somehow
-        active_slot, bench_slot = 1, 3 # Active 1-2, Benched 3-4
+        active_slot, bench_slot = 1, 4
 
         for mon in battle.team.values():
             if mon.active:
-                self._encode_pokemon(mon, state[0, active_slot], battle)
+                Encoder._encode_pokemon(mon, state[0, active_slot])
                 active_slot += 1
             else:
-                self._encode_pokemon(mon, state[0, bench_slot], battle)
-                bench_slot += 1
+                Encoder._encode_pokemon(mon, state[0, bench_slot])
+                bench_slot -= 1
                 if mon.fainted:
                     p1_fainted_count += 1
 
@@ -146,17 +195,68 @@ class Encoder:
 
         p2_fainted_count = 0
         p2_rage_fist_stacks = 0  # TODO: calculate this somehow
-        active_slot, bench_slot = 1, 3 # Active 1-2, Benched 3-4
+        active_slot, bench_slot = 1, 4
 
         for mon in battle.opponent_team.values():
             if mon.active:
-                self._encode_pokemon(mon, state[1, active_slot], battle, opponent=True)
+                Encoder._encode_pokemon(mon, state[1, active_slot])
                 active_slot += 1
             else:
-                self._encode_pokemon(mon, state[1, bench_slot], battle, opponent=True)
-                bench_slot += 1
+                Encoder._encode_pokemon(mon, state[1, bench_slot])
+                bench_slot -= 1
                 if mon.fainted:
                     p2_fainted_count += 1
 
         state[1, 0, 7] = p2_fainted_count
         state[1, 0, 8] = p2_rage_fist_stacks
+
+    @staticmethod
+    def get_action_mask(battle: AbstractBattle):
+        """
+        Returns a [2, ACT_SIZE] action mask for both active Pokémon.
+        Each row is a mask for the legal actions of that Pokémon.
+        """
+        assert isinstance(battle, DoubleBattle)
+
+        # direct copy of vgc-bench action mask
+        def single_action_mask(battle: DoubleBattle, pos: int) -> list[int]:
+            switch_space = [
+                i + 1
+                for i, pokemon in enumerate(battle.team.values())
+                if not battle.trapped[pos]
+                and pokemon.base_species in [p.base_species for p in battle.available_switches[pos]]
+            ]
+            active_mon = battle.active_pokemon[pos]
+            if battle._wait or (any(battle.force_switch) and not battle.force_switch[pos]):
+                actions = [0]
+            elif all(battle.force_switch) and len(battle.available_switches[0]) == 1:
+                actions = switch_space + [0]
+            elif battle.teampreview or active_mon is None:
+                actions = switch_space
+            else:
+                move_spaces = [
+                    [
+                        7 + 5 * i + j + 2
+                        for j in battle.get_possible_showdown_targets(move, active_mon)
+                    ]
+                    for i, move in enumerate(active_mon.moves.values())
+                    if move.id in [m.id for m in battle.available_moves[pos]]
+                ]
+                move_space = [i for s in move_spaces for i in s]
+                tera_space = [i + 20 for i in move_space if battle.can_tera[pos]]
+                if (
+                    not move_space
+                    and len(battle.available_moves[pos]) == 1
+                    and battle.available_moves[pos][0].id in ["struggle", "recharge"]
+                ):
+                    move_space = [9]
+                actions = switch_space + move_space + tera_space
+            actions = actions or [0]
+            action_mask = [int(i in actions) for i in range(ACT_SIZE)]
+            return action_mask
+
+        # Stack for both active Pokémon (positions 0 and 1)
+        mask0 = single_action_mask(battle, 0)
+        mask1 = single_action_mask(battle, 1)
+        # Return as a torch tensor of shape (2, ACT_SIZE)
+        return torch.tensor([mask0, mask1], dtype=torch.uint8)
