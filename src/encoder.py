@@ -1,7 +1,9 @@
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle, SideCondition, Weather, Field, Effect
 from poke_env.battle.pokemon import Pokemon
+from extended_battle import ExtendedBattle
 from lookups import POKEMON
+import sys
 
 BATTLE_STATE_DIMS = (2, 5, 30)
 # Define action space parameters (from gen9vgcenv.py)
@@ -98,11 +100,11 @@ class Encoder:
             pokemon_row[23 + i] = pokemon.moves[move].current_pp
 
         pokemon_row[27] = pokemon.protect_counter
-        pokemon_row[28] = prev_move_failed = 0  # TODO: implement this (not tracked in poke-env)
-        pokemon_row[29] = last_move_used = 0  # Added this for new BattleState
+        pokemon_row[28] = 1 if battle.did_last_move_fail(pokemon, opponent) else 0
+        pokemon_row[29] = last_move_used = 0 # Added this for new BattleState
 
-    @staticmethod
-    def encode_battle_state(battle: DoubleBattle, state: torch.Tensor):
+
+    def encode_battle_state(self, battle: ExtendedBattle, state: torch.Tensor):
         """
         Fills the state tensor with the current state of the battle.
 

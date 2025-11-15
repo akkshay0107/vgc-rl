@@ -1,6 +1,7 @@
 import random
 from poke_env.teambuilder import Teambuilder
 
+
 class RandomTeamFromPool(Teambuilder):
     def __init__(self, teams):
         self.packed_teams = []
