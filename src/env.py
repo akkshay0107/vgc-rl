@@ -1,25 +1,31 @@
 import torch
 from pathlib import Path
 
-from encoder import BATTLE_STATE_DIMS, Encoder
-from gen9vgcenv import Gen9VGCEnv
 from poke_env.battle import AbstractBattle, DoubleBattle
+from poke_env.environment import DoublesEnv
+
+from encoder import BATTLE_STATE_DIMS, Encoder
 from teams import RandomTeamFromPool
 
-# TODO: fix the environment to work
-# PROBLEMS:
-# environment hangs when torkoal gets switched out by eject pack before move selection for turn 1
-# environment crashes when game ends on struggle (assertion fail on battle.finished in PokeEnv)
-class SimEnv(Gen9VGCEnv):
+
+class SimEnv(DoublesEnv):
     def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    @classmethod
+    def build_env(cls):
         teams_dir = "./teams"
         team_files = [
             path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
         ]
         team = RandomTeamFromPool(team_files)
-        kwargs["team"] = team
-
-        super().__init__(*args, **kwargs)
+        return cls(
+            battle_format="gen9vgc2025regh",
+            accept_open_team_sheet=True,
+            start_timer_on_battle_start=True,
+            log_level=25,
+            team=team,
+        )
 
     def calc_reward(self, battle: AbstractBattle) -> float:
         if not battle.finished:

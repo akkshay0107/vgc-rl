@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
+
 from encoder import ACT_SIZE
 
 
@@ -19,59 +20,53 @@ class PseudoPolicy(nn.Module):
         self.to(self.device)
 
     def forward(self, obs_tensor: torch.Tensor, action_mask: torch.Tensor):
+        """
+        Args:
+            obs_tensor: Tensor of shape (batch_size, 2, 5, 30) - flattened before network
+            action_mask: (optional) Tensor of shape (batch_size, 2, action_dim), 1 = legal, 0 = illegal
+
+        Returns:
+            actions: np.ndarray shape (batch_size, 2)
+            cat1: torch.distributions.Categorical for mon 1
+            cat2: torch.distributions.Categorical for mon 2
+        """
         batch_size = obs_tensor.shape[0]
         obs_flat = obs_tensor.view(batch_size, -1).to(self.device)
-        logits = self.network(obs_flat)
-        logits = logits.view(batch_size, 2, self.action_dim)
+        logits = self.network(obs_flat)  # shape: (batch_size, 2 * action_dim)
+        logits = logits.view(batch_size, 2, self.action_dim)  # (B, 2, A)
 
-        # mask fill logits output of network
+        # --- Masking logic ---
+        # action_mask: shape (batch_size, 2, action_dim), values: 1 (legal), 0 (illegal)
         mask = action_mask == 0
         logits = logits.masked_fill(mask.to(self.device), float("-inf"))
 
-        # Detect forced pass for each side
-        force_pass_1 = (action_mask[:, 0].sum(dim=1) == 1) & (action_mask[:, 0, 0] == 1)
-        force_pass_2 = (action_mask[:, 1].sum(dim=1) == 1) & (action_mask[:, 1, 0] == 1)
+        cat1 = Categorical(logits=logits[:, 0, :])  # (B, A)
+        action1 = cat1.sample()
 
-        actions = torch.zeros((batch_size, 2), dtype=torch.long, device=self.device)
-        for i in range(batch_size):
-            if force_pass_1[i] and force_pass_2[i]:
-                # Both forced pass, action = (0,0)
-                actions[i, 0] = 0
-                actions[i, 1] = 0
-            elif force_pass_1[i] and not force_pass_2[i]:
-                # Force pass for side 1, mask out 0 in logits2, sample for side 2
-                actions[i, 0] = 0
-                logits2 = logits[i, 1].clone()
-                logits2[0] = float("-inf")  # mask out action 0
-                dist2 = Categorical(logits=logits2)
-                actions[i, 1] = dist2.sample()
-            elif force_pass_2[i] and not force_pass_1[i]:
-                # Force pass for side 2, mask out 0 in logits1, sample for side 1
-                actions[i, 1] = 0
-                logits1 = logits[i, 0].clone()
-                logits1[0] = float("-inf")  # mask out action 0
-                dist1 = Categorical(logits=logits1)
-                actions[i, 0] = dist1.sample()
-            else:
-                # Neither forced pass
-                logits_side1 = logits[i, 0]
-                dist1 = Categorical(logits=logits_side1)
-                action1 = dist1.sample()
+        # Deep copy base mask for mon 2 and update based on mon 1's action
+        mask2 = action_mask[:, 1, :].clone()
 
-                # Mask out switches and tera in logits2, then sample
-                logits2 = logits[i, 1].clone()
-                if 1 <= action1 <= 6:
-                    logits2[action1] = float("-inf")
-                elif 27 <= action1 <= 46:
-                    logits2[27:46] = float("-inf")
+        # VGC mutual exclusivity adjustments
+        idx = action1  # For each in batch
 
-                dist2 = Categorical(logits=logits2)
-                action2 = dist2.sample()
+        for b in range(batch_size):
+            if 1 <= idx[b] <= 6:
+                # If switched to slot idx, mask for other mon
+                mask2[b, idx[b]] = 0
+            if 86 < idx[b] <= 106:  # Tera range for mon 1
+                mask2[b, 87:107] = 0
+            if idx[b] == 0:  # Pass
+                mask2[b, 0] = 0
+                if mask2[b].sum() == 0:  # no valid action forced to double pass
+                    mask2[b, 0] = 1
+        mask2 = mask2 == 0
+        logits[:, 1, :].masked_fill_(mask2.to(self.device), float("-inf"))
 
-                actions[i, 0] = action1
-                actions[i, 1] = action2
+        cat2 = Categorical(logits=logits[:, 1, :])
+        action2 = cat2.sample()
 
-        return actions
+        actions = torch.stack([action1, action2], dim=1).cpu().numpy()
+        return actions, cat1, cat2
 
 
 if __name__ == "__main__":

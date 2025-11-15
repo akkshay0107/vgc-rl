@@ -5,11 +5,11 @@ from encoder import ACT_SIZE, BATTLE_STATE_DIMS, Encoder
 from env import SimEnv
 from pseudo_policy import PseudoPolicy
 
-num_episodes = 1000
+num_episodes = 10000
 max_steps_per_episode = 100
 gamma = 0.99
 
-env = SimEnv()
+env = SimEnv.build_env()
 policy = PseudoPolicy(observation_dim=prod(BATTLE_STATE_DIMS), action_dim=ACT_SIZE)
 
 
@@ -44,7 +44,7 @@ for episode in range(num_episodes):
         # print(action_mask_batch.shape)
 
         with torch.no_grad():
-            sampled_actions = policy.forward(obs_batch, action_mask_batch)
+            sampled_actions, _, _ = policy.forward(obs_batch, action_mask_batch)
 
         actions[env.agent1.username] = sampled_actions[0]
         actions[env.agent2.username] = sampled_actions[1]
@@ -52,7 +52,12 @@ for episode in range(num_episodes):
         obs, rewards, terminated, truncated, info = env.step(actions)
         episode_rewards.append(rewards[env.agent1.username])
 
-        if terminated[env.agent1.username] or terminated[env.agent2.username]:
+        if (
+            terminated[env.agent1.username]
+            or terminated[env.agent2.username]
+            or truncated[env.agent1.username]
+            or truncated[env.agent2.username]
+        ):
             break
 
     discounted_rewards = compute_discounted_rewards(episode_rewards, gamma)
