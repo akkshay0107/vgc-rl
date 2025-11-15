@@ -8,7 +8,7 @@ BATTLE_STATE_DIMS = (2, 5, 30)
 NUM_SWITCHES = 6
 NUM_MOVES = 4
 NUM_TARGETS = 5
-NUM_GIMMICKS = 4
+NUM_GIMMICKS = 1
 ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
 
 
@@ -241,7 +241,7 @@ class Encoder:
                     if move.id in [m.id for m in battle.available_moves[pos]]
                 ]
                 move_space = [i for s in move_spaces for i in s]
-                tera_space = [i + 80 for i in move_space if battle.can_tera[pos]]
+                tera_space = [i + 20 for i in move_space if battle.can_tera[pos]]
                 if (
                     not move_space
                     and len(battle.available_moves[pos]) == 1

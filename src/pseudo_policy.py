@@ -53,8 +53,8 @@ class PseudoPolicy(nn.Module):
             if 1 <= idx[b] <= 6:
                 # If switched to slot idx, mask for other mon
                 mask2[b, idx[b]] = 0
-            if 86 < idx[b] <= 106:  # Tera range for mon 1
-                mask2[b, 87:107] = 0
+            if 26 < idx[b] <= 46:  # Tera range for mon 1
+                mask2[b, 27:47] = 0
             if idx[b] == 0:  # Pass
                 mask2[b, 0] = 0
                 if mask2[b].sum() == 0:  # no valid action forced to double pass

@@ -5,7 +5,7 @@ from encoder import ACT_SIZE, BATTLE_STATE_DIMS, Encoder
 from env import SimEnv
 from pseudo_policy import PseudoPolicy
 
-num_episodes = 10000
+num_episodes = 2500
 max_steps_per_episode = 100
 gamma = 0.99
 
