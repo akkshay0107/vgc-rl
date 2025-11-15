@@ -2,6 +2,12 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
+# Adding src to path
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
 from encoder import ACT_SIZE
 
 

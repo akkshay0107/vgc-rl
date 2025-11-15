@@ -1,6 +1,12 @@
 from math import prod
 import torch
 
+# Adding src to path
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
 from encoder import ACT_SIZE, BATTLE_STATE_DIMS, Encoder
 from env import SimEnv
 from pseudo_policy import PseudoPolicy

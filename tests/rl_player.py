@@ -1,6 +1,13 @@
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import Player, DefaultBattleOrder
 from poke_env.environment import DoublesEnv
+
+# Adding src to path
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
 from encoder import Encoder, BATTLE_STATE_DIMS
 import torch
 from pseudo_policy import PseudoPolicy
