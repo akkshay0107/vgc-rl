@@ -19,6 +19,7 @@ dependencies = [
     "idna",
     "certifi",
     "pettingzoo",
+    "transformers[torch]>=4.57.1",
 ]
 
 [tool.pyright]

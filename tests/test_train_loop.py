@@ -1,22 +1,24 @@
-from math import prod
-import torch
+import os
 
 # Adding src to path
 import sys
-import os
+from math import prod
+
+import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from encoder import ACT_SIZE, BATTLE_STATE_DIMS, Encoder
-from env import SimEnv
 from pseudo_policy import PseudoPolicy
+
+from encoder import ACT_SIZE, OBS_DIM, Encoder
+from env import SimEnv
 
 num_episodes = 2500
 max_steps_per_episode = 100
 gamma = 0.99
 
 env = SimEnv.build_env()
-policy = PseudoPolicy(observation_dim=prod(BATTLE_STATE_DIMS), action_dim=ACT_SIZE)
+policy = PseudoPolicy(observation_dim=prod(OBS_DIM), action_dim=ACT_SIZE)
 
 
 def compute_discounted_rewards(rewards, gamma):
@@ -28,6 +30,10 @@ def compute_discounted_rewards(rewards, gamma):
     return discounted_rewards
 
 
+EMBEDDING_TEST = 1  # change to zero to test policy
+if EMBEDDING_TEST:
+    num_episodes = 10
+
 for episode in range(num_episodes):
     obs, _ = env.reset()
     episode_rewards = []
@@ -38,6 +44,13 @@ for episode in range(num_episodes):
         # Get observation tensors for both agents (convert to float tensor)
         obs_agent1 = obs[env.agent1.username]
         obs_agent2 = obs[env.agent2.username]
+
+        if EMBEDDING_TEST:
+            embedding = Encoder.encode_battle_state(env.battle1)  # type: ignore
+            print(
+                embedding.shape
+            )  # (batches, tokens, 312) where 312 is dimensionality of embedding space from TinyBERT
+            break
 
         action_mask_agent1 = Encoder.get_action_mask(env.battle1)  # type: ignore
         action_mask_agent2 = Encoder.get_action_mask(env.battle2)  # type: ignore

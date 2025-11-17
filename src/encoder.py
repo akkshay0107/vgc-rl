@@ -1,5 +1,6 @@
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
+from transformers import BertModel, BertTokenizer
 
 OBS_DIM = (2, 5, 30)
 # Define action space parameters (from gen9vgcenv.py)
@@ -16,6 +17,19 @@ class Encoder:
     - Get the set of all valid actions from the current battle state
     - Encode the battle state into an observation for the policy network
     """
+
+    tokenizer = BertTokenizer.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+    model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+
+    @staticmethod
+    def encode_battle_state(battle: AbstractBattle):
+        assert isinstance(battle, DoubleBattle)
+        battle_str = str(battle)  # This should be replaced with your own formatting
+        inputs = Encoder.tokenizer(battle_str, return_tensors="pt", truncation=True, max_length=128)
+        with torch.no_grad():
+            outputs = Encoder.model(**inputs)
+            last_hidden_state = outputs.last_hidden_state
+        return last_hidden_state
 
     @staticmethod
     def get_action_mask(battle: AbstractBattle):
