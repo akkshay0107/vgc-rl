@@ -11,7 +11,7 @@ from transformers import BertModel, BertTokenizer
 
 from lookups import ITEM_DESCRIPTION, MOVES, POKEMON, POKEMON_DESCRIPTION
 
-OBS_DIM = (2, 5, 30)
+OBS_DIM = (11, 650)  # 624 from TinyBERT and 26 for additional information
 # Define action space parameters (from gen9vgcenv.py)
 NUM_SWITCHES = 6
 NUM_MOVES = 4
@@ -31,7 +31,19 @@ class Encoder:
     model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 
     @staticmethod
-    def _get_pokemon_as_text(pokemon: Pokemon) -> str:
+    def _get_pokemon_as_text(pokemon: Pokemon, status: int) -> str:
+        # building the text description for each pokemon.
+        if status == -1:
+            status_str = "This Pokemon is DROPPED. It is not part of the battle."
+        elif status == 0:
+            status_str = "This pokemon MAY or MAY NOT be in the back as a switch."
+        elif status == 1:
+            status_str = "This pokemon IS ACTIVE. It is currently on the field."
+        elif status == 2:
+            status_str = "This pokemon is IN THE BACK. It is able to switch in."
+        else:
+            status_str = "This pokemon has FAINTED. It no longer participates in the battle."
+
         movelist = list(pokemon.moves.keys())
         joint_movelist = ",".join(movelist)
         id = POKEMON[joint_movelist]
@@ -47,12 +59,22 @@ class Encoder:
 
         moves_desc = [get_move_desc(move, MOVES[move]) for move in movelist]
 
-        return desc + item_desc + "Has the following moves: " + ". ".join(moves_desc)
+        return status_str + desc + item_desc + "Has the following moves: " + ". ".join(moves_desc)
 
     @staticmethod
-    def _encode_pokemon(pokemon: Pokemon, battle: DoubleBattle) -> tuple[str, list[float]]:
+    def _encode_pokemon(
+        pokemon: Pokemon, battle: DoubleBattle, status: int
+    ) -> tuple[str, list[float]]:
+        """
+        status indicates whether we know if pokemon is active, benched, dropped, fainted or unknown
+        -1 = dropped
+        0 = unknown
+        1 = active
+        2 = benched
+        3 = fainted
+        """
         # Text input for each pokemon
-        pokemon_str = Encoder._get_pokemon_as_text(pokemon)
+        pokemon_str = Encoder._get_pokemon_as_text(pokemon, status)
 
         # Array inputs for each pokemon (roughly normalize to [0,1])
         pokemon_row = [0.0] * 26
@@ -91,27 +113,34 @@ class Encoder:
         p1_mon_txt = []
         p1_mon_arr = []
         for mon in battle.team.values():
-            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
+            if mon.fainted:
+                status = 3
+            elif mon.active:
+                status = 1
+            else:
+                status = 2
+            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
             p1_mon_txt.append(mon_txt)
             p1_mon_arr.append(mon_arr)
 
         p2_mon_txt = []
         p2_mon_arr = []
-        # TODO: fix this logic
         for mon in battle.teampreview_opponent_team:
-            if mon not in battle.opponent_team.values():
-                if len(battle.opponent_team) == 4:
-                    mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
-                    p2_mon_txt.append(mon_txt)
-                    p2_mon_arr.append(mon_arr)
+            if mon not in battle.opponent_team.values():  # not revealed so far
+                if len(battle.opponent_team) == 4:  # confirmed not in team
+                    status = -1
+                else:  # we do not know if this pokemon is in the back or not
+                    status = 0
+            else:  # guaranteed in the team
+                if mon.fainted:
+                    status = 3
+                elif mon.active:
+                    status = 1
                 else:
-                    mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
-                    p2_mon_txt.append(mon_txt)
-                    p2_mon_arr.append(mon_arr)
-            else:
-                mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
-                p2_mon_txt.append(mon_txt)
-                p2_mon_arr.append(mon_arr)
+                    status = 2
+            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
+            p2_mon_txt.append(mon_txt)
+            p2_mon_arr.append(mon_arr)
 
         return p1_mon_txt, p1_mon_arr, p2_mon_txt, p2_mon_arr
 
@@ -236,6 +265,7 @@ class Encoder:
         p1_txt, p1_arr, opp_txt, opp_arr = Encoder._get_description(battle)
         field_conditions = Encoder._get_locals_as_text(battle)
 
+        # concatenate the output from the CLS token and the mean of all tokens in the sequence
         def get_cls_mean_concat(text: str, max_len: int = 1024) -> torch.Tensor:
             encoded = Encoder.tokenizer(
                 text, max_length=max_len, padding="max_length", truncation=True, return_tensors="pt"
