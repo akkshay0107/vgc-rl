@@ -1,5 +1,10 @@
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
+from poke_env.battle.effect import Effect
+from poke_env.battle.field import Field
+from poke_env.battle.pokemon import Pokemon
+from poke_env.battle.side_condition import SideCondition
+from poke_env.battle.weather import Weather
 from transformers import BertModel, BertTokenizer
 
 OBS_DIM = (2, 5, 30)
@@ -22,14 +27,143 @@ class Encoder:
     model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 
     @staticmethod
+    def _encode_pokemon(pokemon: Pokemon, battle: DoubleBattle):
+        # Text input for each pokemon
+        # TODO: encode everything else from a pokemon into a string that
+        # can be inputted into the BertTokenizer for the embedding
+        pokemon_str = ""
+
+        # Array inputs for each pokemon (roughly normalize to [0,1])
+        pokemon_row = [0.0] * 26
+        pokemon_row[0] = pokemon.type_1.value / 18
+        pokemon_row[1] = 0 if pokemon.type_2 is None else pokemon.type_2.value / 18
+
+        pokemon_row[2] = 0 if not pokemon.is_terastallized else pokemon.tera_type.value / 18  # type: ignore
+        pokemon_row[3] = 1 if pokemon.item else 0
+
+        curr_effects = pokemon.effects
+        pokemon_row[4] = curr_effects.get(Effect.TAUNT, 0) / 3
+        pokemon_row[5] = curr_effects.get(Effect.ENCORE, 0) / 3
+        pokemon_row[6] = 1 if Effect.CONFUSION in curr_effects else 0
+
+        pokemon_row[7] = pokemon.current_hp_fraction if pokemon.current_hp is not None else 0
+
+        stats = ["hp", "atk", "def", "spa", "spd", "spe"]
+        for i, stat in enumerate(stats):
+            pokemon_row[8 + i] = pokemon.base_stats[stat] / 200
+
+        boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
+        for i, boost in enumerate(boosts):
+            pokemon_row[14 + i] = pokemon.boosts[boost] / 6
+
+        for i, move in enumerate(pokemon.moves):
+            pokemon_row[21 + i] = pokemon.moves[move].current_pp / pokemon.moves[move].max_pp
+
+        pokemon_row[25] = pokemon.protect_counter / 3
+
+        return pokemon_str, pokemon_row
+
+    @staticmethod
+    def _get_description(battle: DoubleBattle):
+        p1_mon_txt = []
+        p1_mon_arr = []
+        for mon in battle.team.values():
+            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
+            p1_mon_txt.append(mon_txt)
+            p1_mon_arr.append(mon_arr)
+
+        p2_mon_txt = []
+        p2_mon_arr = []
+        for mon in battle.teampreview_opponent_team:
+            if mon not in battle.opponent_team.values():
+                if len(battle.opponent_team) == 4:
+                    mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
+                    p2_mon_txt.append(mon_txt)
+                    p2_mon_arr.append(mon_arr)
+                else:
+                    mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
+                    p2_mon_txt.append(mon_txt)
+                    p2_mon_arr.append(mon_arr)
+            else:
+                mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle)
+                p2_mon_txt.append(mon_txt)
+                p2_mon_arr.append(mon_arr)
+
+        return p1_mon_txt, p1_mon_arr, p2_mon_txt, p2_mon_arr
+
+    @staticmethod
+    def _get_locals(battle: DoubleBattle):
+        # Encode global field conditions for both players
+        p1_row = [0.0] * 7
+        p2_row = [0.0] * 7
+        for field_row in [p1_row, p2_row]:
+            trick_room_turns = 0
+            grassy_terrain_turns = 0
+            psychic_terrain_turns = 0
+            if battle.fields:
+                grassy_terrain_start = battle.fields.get(Field.GRASSY_TERRAIN, -1)
+                psychic_terrain_start = battle.fields.get(Field.PSYCHIC_TERRAIN, -1)
+                trick_room_start = battle.fields.get(Field.TRICK_ROOM, -1)
+
+                if grassy_terrain_start >= 0:
+                    grassy_terrain_turns = 5 - (battle.turn - grassy_terrain_start)
+                elif psychic_terrain_start >= 0:
+                    psychic_terrain_turns = 5 - (battle.turn - psychic_terrain_start)
+
+                if trick_room_start >= 0:
+                    trick_room_turns = 5 - (battle.turn - trick_room_start)
+
+            field_row[0] = trick_room_turns / 5.0
+            field_row[1] = grassy_terrain_turns / 5.0
+            field_row[2] = psychic_terrain_turns / 5.0
+
+            sun_turns = 0
+            rain_turns = 0
+            if battle._weather:
+                rain_start = battle._weather.get(Weather.RAINDANCE, -1)
+                sun_start = battle._weather.get(Weather.SUNNYDAY, -1)
+                if rain_start >= 0:
+                    rain_turns = 5 - (battle.turn - rain_start)
+                elif sun_start >= 0:
+                    sun_turns = 5 - (battle.turn - sun_start)
+
+            field_row[3] = sun_turns / 5.0
+            field_row[4] = rain_turns / 5.0
+
+        # Local effects
+        tailwind_turns = 0
+        veil_turns = 0
+        if battle.side_conditions:
+            tailwind_start = battle.side_conditions.get(SideCondition.TAILWIND, -1)
+            veil_start = battle.side_conditions.get(SideCondition.AURORA_VEIL, -1)
+            if tailwind_start >= 0:
+                tailwind_turns = 4 - (battle.turn - tailwind_start)
+            if veil_start >= 0:
+                veil_turns = 5 - (battle.turn - veil_start)
+        p1_row[5] = tailwind_turns / 4.0
+        p1_row[6] = veil_turns / 5.0
+
+        tailwind_turns = 0
+        veil_turns = 0
+        if battle.opponent_side_conditions:
+            tailwind_start = battle.opponent_side_conditions.get(SideCondition.TAILWIND, -1)
+            veil_start = battle.opponent_side_conditions.get(SideCondition.AURORA_VEIL, -1)
+            if tailwind_start >= 0:
+                tailwind_turns = 4 - (battle.turn - tailwind_start)
+            if veil_start >= 0:
+                veil_turns = 5 - (battle.turn - veil_start)
+        p2_row[5] = tailwind_turns / 4.0
+        p2_row[6] = veil_turns / 5.0
+
+        return p1_row, p2_row
+
+    @staticmethod
     def encode_battle_state(battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        battle_str = str(battle)  # This should be replaced with your own formatting
-        inputs = Encoder.tokenizer(battle_str, return_tensors="pt", truncation=True, max_length=128)
-        with torch.no_grad():
-            outputs = Encoder.model(**inputs)
-            last_hidden_state = outputs.last_hidden_state
-        return last_hidden_state
+        p1_txt, p1_arr, opp_str, opp_arr = Encoder._get_description(battle)
+        p1_locals, opp_locals = Encoder._get_locals(battle)
+
+        # combine the stuff above into one observation
 
     @staticmethod
     def get_action_mask(battle: AbstractBattle):
