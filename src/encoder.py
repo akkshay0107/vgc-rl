@@ -39,9 +39,9 @@ class Encoder:
         desc = POKEMON_DESCRIPTION[id]
 
         if pokemon.item is None:
-            item_desc = "Hold no item."
+            item_desc = "Holds no item."
         else:
-            item_desc = f"Holds item {pokemon.item}." + ITEM_DESCRIPTION[id]
+            item_desc = ITEM_DESCRIPTION[id]
 
         get_move_desc = lambda move, desc: move + ":" + json.dumps(desc, separators=(",", ":"))  # noqa: E731
 
