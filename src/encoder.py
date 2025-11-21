@@ -96,6 +96,16 @@ class Encoder:
 
     @staticmethod
     def _get_locals(battle: DoubleBattle):
+        """
+        For each side,
+        0 = trick room turns
+        1 = grassy terrain turns
+        2 = psychic terrain turns
+        3 = sun turns
+        4 = rain turns
+        5 = tailwind turns
+        6 = aurora veil turns
+        """
         # Encode global field conditions for both players
         p1_row = [0.0] * 7
         p2_row = [0.0] * 7
@@ -116,9 +126,9 @@ class Encoder:
                 if trick_room_start >= 0:
                     trick_room_turns = 5 - (battle.turn - trick_room_start)
 
-            field_row[0] = trick_room_turns / 5.0
-            field_row[1] = grassy_terrain_turns / 5.0
-            field_row[2] = psychic_terrain_turns / 5.0
+            field_row[0] = trick_room_turns
+            field_row[1] = grassy_terrain_turns
+            field_row[2] = psychic_terrain_turns
 
             sun_turns = 0
             rain_turns = 0
@@ -130,8 +140,8 @@ class Encoder:
                 elif sun_start >= 0:
                     sun_turns = 5 - (battle.turn - sun_start)
 
-            field_row[3] = sun_turns / 5.0
-            field_row[4] = rain_turns / 5.0
+            field_row[3] = sun_turns
+            field_row[4] = rain_turns
 
         # Local effects
         tailwind_turns = 0
@@ -143,8 +153,8 @@ class Encoder:
                 tailwind_turns = 4 - (battle.turn - tailwind_start)
             if veil_start >= 0:
                 veil_turns = 5 - (battle.turn - veil_start)
-        p1_row[5] = tailwind_turns / 4.0
-        p1_row[6] = veil_turns / 5.0
+        p1_row[5] = tailwind_turns
+        p1_row[6] = veil_turns
 
         tailwind_turns = 0
         veil_turns = 0
@@ -155,16 +165,55 @@ class Encoder:
                 tailwind_turns = 4 - (battle.turn - tailwind_start)
             if veil_start >= 0:
                 veil_turns = 5 - (battle.turn - veil_start)
-        p2_row[5] = tailwind_turns / 4.0
-        p2_row[6] = veil_turns / 5.0
+        p2_row[5] = tailwind_turns
+        p2_row[6] = veil_turns
 
-        return p1_row
+        return p1_row, p2_row
+
+    @staticmethod
+    def _get_locals_as_text(battle: DoubleBattle) -> str:
+        p1_row, opp_row = Encoder._get_locals(battle)
+        header = (
+            "Effects: Trick Room (reverses speed order), "
+            "Grassy Terrain (heals 1/16 of max HP for grounded Pokémon and boosts Grass moves by 30%), "
+            "Psychic Terrain (prevents priority moves by grounded Pokémon and boosts Psychic moves by 30%), "
+            "Sunny Weather (boosts Fire moves by 50%, weakens Water moves by 50%), "
+            "Rainy Weather (boosts Water moves by 50%, weakens Fire moves by 50%), "
+            "Tailwind (doubles team speed), "
+            "Aurora Veil (reduces damage taken by team by 33%)."
+        )
+
+        p1_row, p2_row = Encoder._get_locals(battle)
+
+        effects = [
+            "Trick Room",
+            "Grassy Terrain",
+            "Psychic Terrain",
+            "Sunny Weather",
+            "Rainy Weather",
+            "Tailwind",
+            "Aurora Veil",
+        ]
+
+        def describe_side(name_suffix, row):
+            parts = []
+            for name, turns in zip(effects, row):
+                if turns > 0:
+                    parts.append(f"{name} active for {int(turns)} more turns")
+                else:
+                    parts.append(f"{name} inactive")
+            return f"{name_suffix} has: " + ". ".join(parts)
+
+        p1_desc = describe_side("Player 1", p1_row)
+        p2_desc = describe_side("Player 2", p2_row)
+
+        return header + " " + p1_desc + ". " + p2_desc + "."
 
     @staticmethod
     def encode_battle_state(battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
         p1_txt, p1_arr, opp_txt, opp_arr = Encoder._get_description(battle)
-        field_status = Encoder._get_locals(battle)
+        field_conditions = Encoder._get_locals_as_text(battle)
 
         def get_cls_mean_concat(text: str, max_len: int = 1024) -> torch.Tensor:
             encoded = Encoder.tokenizer(
@@ -190,7 +239,7 @@ class Encoder:
 
         all_embeddings = []
 
-        field_emb = get_cls_mean_concat(field_status)
+        field_emb = get_cls_mean_concat(field_conditions)
         all_embeddings.append(
             torch.cat(
                 [
