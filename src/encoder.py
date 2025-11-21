@@ -1,3 +1,5 @@
+import json
+
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.battle.effect import Effect
@@ -6,6 +8,8 @@ from poke_env.battle.pokemon import Pokemon
 from poke_env.battle.side_condition import SideCondition
 from poke_env.battle.weather import Weather
 from transformers import BertModel, BertTokenizer
+
+from lookups import ITEM_DESCRIPTION, MOVES, POKEMON, POKEMON_DESCRIPTION
 
 OBS_DIM = (2, 5, 30)
 # Define action space parameters (from gen9vgcenv.py)
@@ -27,11 +31,28 @@ class Encoder:
     model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 
     @staticmethod
+    def _get_pokemon_as_text(pokemon: Pokemon) -> str:
+        movelist = list(pokemon.moves.keys())
+        joint_movelist = ",".join(movelist)
+        id = POKEMON[joint_movelist]
+
+        desc = POKEMON_DESCRIPTION[id]
+
+        if pokemon.item is None:
+            item_desc = "Hold no item."
+        else:
+            item_desc = f"Holds item {pokemon.item}." + ITEM_DESCRIPTION[id]
+
+        get_move_desc = lambda move, desc: move + ":" + json.dumps(desc, separators=(",", ":"))  # noqa: E731
+
+        moves_desc = [get_move_desc(move, MOVES[move]) for move in movelist]
+
+        return desc + item_desc + "Has the following moves: " + ". ".join(moves_desc)
+
+    @staticmethod
     def _encode_pokemon(pokemon: Pokemon, battle: DoubleBattle) -> tuple[str, list[float]]:
         # Text input for each pokemon
-        # TODO: encode everything else from a pokemon into a string that
-        # can be inputted into the BertTokenizer for the embedding
-        pokemon_str = ""
+        pokemon_str = Encoder._get_pokemon_as_text(pokemon)
 
         # Array inputs for each pokemon (roughly normalize to [0,1])
         pokemon_row = [0.0] * 26
