@@ -27,7 +27,7 @@ class Encoder:
     model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 
     @staticmethod
-    def _encode_pokemon(pokemon: Pokemon, battle: DoubleBattle):
+    def _encode_pokemon(pokemon: Pokemon, battle: DoubleBattle) -> tuple[str, list[float]]:
         # Text input for each pokemon
         # TODO: encode everything else from a pokemon into a string that
         # can be inputted into the BertTokenizer for the embedding
@@ -64,7 +64,9 @@ class Encoder:
         return pokemon_str, pokemon_row
 
     @staticmethod
-    def _get_description(battle: DoubleBattle):
+    def _get_description(
+        battle: DoubleBattle,
+    ) -> tuple[list[str], list[float], list[str], list[float]]:
         p1_mon_txt = []
         p1_mon_arr = []
         for mon in battle.team.values():
@@ -74,6 +76,7 @@ class Encoder:
 
         p2_mon_txt = []
         p2_mon_arr = []
+        # TODO: fix this logic
         for mon in battle.teampreview_opponent_team:
             if mon not in battle.opponent_team.values():
                 if len(battle.opponent_team) == 4:
@@ -155,15 +158,64 @@ class Encoder:
         p2_row[5] = tailwind_turns / 4.0
         p2_row[6] = veil_turns / 5.0
 
-        return p1_row, p2_row
+        return p1_row
 
     @staticmethod
     def encode_battle_state(battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        p1_txt, p1_arr, opp_str, opp_arr = Encoder._get_description(battle)
-        p1_locals, opp_locals = Encoder._get_locals(battle)
+        p1_txt, p1_arr, opp_txt, opp_arr = Encoder._get_description(battle)
+        field_status = Encoder._get_locals(battle)
+
+        def get_cls_mean_concat(text: str, max_len: int = 1024) -> torch.Tensor:
+            encoded = Encoder.tokenizer(
+                text, max_length=max_len, padding="max_length", truncation=True, return_tensors="pt"
+            )
+            with torch.no_grad():
+                outputs = Encoder.model(**encoded)
+            last_hidden = outputs.last_hidden_state  # (1, seq_len, 312)
+            cls_emb = last_hidden[:, 0, :]  # (1, 312)
+            # Exclude padding tokens for mean pooling
+            mask = encoded["attention_mask"].unsqueeze(-1)  # (1, seq_len, 1)
+            masked_hidden = last_hidden * mask
+            sum_hidden = masked_hidden.sum(dim=1)  # (1, 312)
+            len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
+            mean_emb = sum_hidden / len_nonpad  # (1, 312)
+            concat_emb = torch.cat([cls_emb, mean_emb], dim=-1)  # (1, 624)
+            return concat_emb
 
         # combine the stuff above into one observation
+        # row 0: pad p1 and opp locals into a string and pass it through encoder (1, 624)
+        # row 1-4: pokemons for p1 (4, 650)
+        # rows 6-11: pokemons for p2 (6, 650)
+
+        all_embeddings = []
+
+        field_emb = get_cls_mean_concat(field_status)
+        all_embeddings.append(
+            torch.cat(
+                [
+                    field_emb,  # (1, 624)
+                    torch.zeros(
+                        (1, 26),
+                        dtype=field_emb.dtype,
+                        device=field_emb.device,
+                    ),
+                ],
+                dim=-1,
+            )  # (1, 650)
+        )
+
+        for mon_txt, mon_arr in zip(p1_txt, p1_arr):
+            emb = get_cls_mean_concat(mon_txt)
+            extra = torch.Tensor(mon_arr, device=emb.device)
+            all_embeddings.append(torch.cat([emb, extra], dim=1))
+
+        for mon_txt, mon_arr in zip(opp_txt, opp_arr):
+            emb = get_cls_mean_concat(mon_txt)
+            extra = torch.Tensor(mon_arr, device=emb.device)
+            all_embeddings.append(torch.cat([emb, extra], dim=1))
+
+        return torch.cat(all_embeddings, dim=0)  # should be (11, 650)
 
     @staticmethod
     def get_action_mask(battle: AbstractBattle):
