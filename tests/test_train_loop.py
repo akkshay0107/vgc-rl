@@ -31,8 +31,6 @@ def compute_discounted_rewards(rewards, gamma):
 
 
 EMBEDDING_TEST = 1  # change to zero to test policy
-if EMBEDDING_TEST:
-    num_episodes = 10
 
 for episode in range(num_episodes):
     obs, _ = env.reset()
@@ -47,9 +45,7 @@ for episode in range(num_episodes):
 
         if EMBEDDING_TEST:
             embedding = Encoder.encode_battle_state(env.battle1)  # type: ignore
-            print(
-                embedding.shape
-            )  # should be (11, 650)
+            print(embedding.shape)  # should be (11, 650)
             break
 
         action_mask_agent1 = Encoder.get_action_mask(env.battle1)  # type: ignore
@@ -81,3 +77,5 @@ for episode in range(num_episodes):
 
     discounted_rewards = compute_discounted_rewards(episode_rewards, gamma)
     print(f"Episode {episode + 1}/{num_episodes} finished, reward: {sum(episode_rewards):.3f}")
+    if EMBEDDING_TEST:
+        break

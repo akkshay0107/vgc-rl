@@ -125,6 +125,8 @@ class Encoder:
             mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
             p1_mon_txt.append(mon_txt)
             p1_mon_arr.append(mon_arr)
+            if len(p1_mon_arr) == 4:
+                break # for team preview dodging
 
         p2_mon_txt = []
         p2_mon_arr = []
@@ -309,15 +311,19 @@ class Encoder:
         )
 
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
+            print(mon_txt)
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
 
         for mon_txt, mon_arr in zip(opp_txt, opp_arr):
+            print(mon_txt)
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
 
+        print()
+        print()
         return torch.cat(all_embeddings, dim=0)  # should be (11, 650)
 
     @staticmethod
