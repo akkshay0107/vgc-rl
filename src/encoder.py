@@ -45,6 +45,9 @@ class Encoder:
             status_str = "This pokemon has FAINTED. It no longer participates in the battle."
 
         movelist = list(pokemon.moves.keys())
+        if not movelist:
+            return status_str + " Moves are unknown."
+
         joint_movelist = ",".join(movelist)
         id = POKEMON[joint_movelist]
 
@@ -266,7 +269,7 @@ class Encoder:
         field_conditions = Encoder._get_locals_as_text(battle)
 
         # concatenate the output from the CLS token and the mean of all tokens in the sequence
-        def get_cls_mean_concat(text: str, max_len: int = 1024) -> torch.Tensor:
+        def get_cls_mean_concat(text: str, max_len: int = 512) -> torch.Tensor:
             encoded = Encoder.tokenizer(
                 text, max_length=max_len, padding="max_length", truncation=True, return_tensors="pt"
             )
@@ -307,12 +310,12 @@ class Encoder:
 
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
             emb = get_cls_mean_concat(mon_txt)
-            extra = torch.Tensor(mon_arr, device=emb.device)
+            extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
 
         for mon_txt, mon_arr in zip(opp_txt, opp_arr):
             emb = get_cls_mean_concat(mon_txt)
-            extra = torch.Tensor(mon_arr, device=emb.device)
+            extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
 
         return torch.cat(all_embeddings, dim=0)  # should be (11, 650)

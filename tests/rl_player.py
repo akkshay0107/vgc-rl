@@ -8,7 +8,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from encoder import Encoder, BATTLE_STATE_DIMS
+from encoder import Encoder
 import torch
 from pseudo_policy import PseudoPolicy
 
@@ -35,6 +35,4 @@ class RLPlayer(Player):
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        obs = torch.zeros(BATTLE_STATE_DIMS, dtype=torch.float32)
-        Encoder.encode_battle_state(battle, obs)
-        return obs
+        return Encoder.encode_battle_state(battle)

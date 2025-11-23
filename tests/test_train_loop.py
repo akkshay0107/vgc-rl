@@ -49,7 +49,7 @@ for episode in range(num_episodes):
             embedding = Encoder.encode_battle_state(env.battle1)  # type: ignore
             print(
                 embedding.shape
-            )  # (batches, tokens, 312) where 312 is dimensionality of embedding space from TinyBERT
+            )  # should be (11, 650)
             break
 
         action_mask_agent1 = Encoder.get_action_mask(env.battle1)  # type: ignore

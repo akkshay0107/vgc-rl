@@ -1,11 +1,9 @@
-from typing import Optional, Union
 from pathlib import Path
+from typing import Optional, Union
 
-import torch
 import numpy as np
 import numpy.typing as npt
 from gymnasium.spaces import MultiDiscrete
-
 from poke_env.battle import AbstractBattle, DoubleBattle, Pokemon
 from poke_env.environment.env import ObsType, PokeEnv
 from poke_env.player.battle_order import (
@@ -13,8 +11,8 @@ from poke_env.player.battle_order import (
     DefaultBattleOrder,
     DoubleBattleOrder,
     ForfeitBattleOrder,
-    SingleBattleOrder,
     PassBattleOrder,
+    SingleBattleOrder,
 )
 from poke_env.player.player import Player
 from poke_env.ps_client import (
@@ -24,8 +22,9 @@ from poke_env.ps_client import (
 )
 from poke_env.teambuilder import Teambuilder
 
-from encoder import OBS_DIM, Encoder
+from encoder import Encoder
 from teams import RandomTeamFromPool
+
 
 # modified Gen9VGCEnv from poke-env
 # to remove all other gimmicks but tera
@@ -352,6 +351,4 @@ class SimEnv(Gen9VGCEnv):
 
     def embed_battle(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        obs = torch.zeros(OBS_DIM, dtype=torch.float32)
-        # TODO: implement the actual battle encoding function
-        return obs
+        return Encoder.encode_battle_state(battle)
