@@ -115,34 +115,39 @@ class Encoder:
     ) -> tuple[list[str], list[float], list[str], list[float]]:
         p1_mon_txt = []
         p1_mon_arr = []
+        possible_switches = set()
+        for switches in battle.available_switches:
+            for mon in switches:
+                possible_switches.add(mon)
+
         for mon in battle.team.values():
             if mon.fainted:
                 status = 3
-            elif mon.active:
+            elif mon in battle.active_pokemon:
                 status = 1
-            else:
+            elif mon in possible_switches:
                 status = 2
+            else:
+                continue
             mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
             p1_mon_txt.append(mon_txt)
             p1_mon_arr.append(mon_arr)
-            if len(p1_mon_arr) == 4:
-                break # for team preview dodging
 
         p2_mon_txt = []
         p2_mon_arr = []
-        for mon in battle.teampreview_opponent_team:
-            if mon not in battle.opponent_team.values():  # not revealed so far
-                if len(battle.opponent_team) == 4:  # confirmed not in team
-                    status = -1
-                else:  # we do not know if this pokemon is in the back or not
-                    status = 0
-            else:  # guaranteed in the team
-                if mon.fainted:
-                    status = 3
-                elif mon.active:
-                    status = 1
-                else:
-                    status = 2
+        revealed = [mon for mon in battle.opponent_team.values() if mon.revealed]
+
+        for mon in battle.opponent_team.values():
+            if mon.fainted:
+                status = 3
+            elif mon in battle.opponent_active_pokemon:
+                status = 2
+            elif mon.revealed:
+                status = 2
+            elif len(revealed) == 4:
+                status = -1
+            else:
+                status = 0
             mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
             p2_mon_txt.append(mon_txt)
             p2_mon_arr.append(mon_arr)
@@ -267,6 +272,9 @@ class Encoder:
     @staticmethod
     def encode_battle_state(battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
+        if battle.teampreview:
+            return torch.rand(OBS_DIM, dtype=torch.float32)
+
         p1_txt, p1_arr, opp_txt, opp_arr = Encoder._get_description(battle)
         field_conditions = Encoder._get_locals_as_text(battle)
 
@@ -311,19 +319,24 @@ class Encoder:
         )
 
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
-            print(mon_txt)
+            # print(mon_txt)
+            # print()
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
+
+        # print("-"*100)
+        # print()
 
         for mon_txt, mon_arr in zip(opp_txt, opp_arr):
-            print(mon_txt)
+            # print(mon_txt)
+            # print()
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
 
-        print()
-        print()
+        # print("-"*100)
+        # print()
         return torch.cat(all_embeddings, dim=0)  # should be (11, 650)
 
     @staticmethod
