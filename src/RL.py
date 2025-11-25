@@ -50,7 +50,7 @@ class BattlePolicyNet(nn.Module):
         self.value_head = nn.Linear(d_model, 1)
 
     def forward(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
-        """
+
         if obs.dim() == 2:
             obs = obs.unsqueeze(0) 
 
