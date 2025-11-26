@@ -1,11 +1,10 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from encoder import OBS_DIM, ACT_SIZE 
+from encoder import ACT_SIZE, OBS_DIM
 
 
-class BattlePolicyNet(nn.Module):
+class PolicyNet(nn.Module):
     """
     Actor-critic model (pretty simple, not optimized)
 
@@ -13,13 +12,13 @@ class BattlePolicyNet(nn.Module):
         obs: (B, 11, 650) or (11, 650) observation from Encoder.encode_battle_state
 
     Output:
-        policy_logits: (B, 2, ACT_SIZE)  
-        value:         (B,)             
+        policy_logits: (B, 2, ACT_SIZE)
+        value:         (B,)
     """
 
     def __init__(
         self,
-        obs_dim=OBS_DIM,   # (11, 650)
+        obs_dim=OBS_DIM,  # (11, 650)
         act_size=ACT_SIZE,
         d_model: int = 256,
         n_heads: int = 4,
@@ -37,7 +36,7 @@ class BattlePolicyNet(nn.Module):
             nhead=n_heads,
             dim_feedforward=4 * d_model,
             dropout=dropout,
-            batch_first=True,  
+            batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
 
@@ -50,25 +49,26 @@ class BattlePolicyNet(nn.Module):
         self.value_head = nn.Linear(d_model, 1)
 
     def forward(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
-
         if obs.dim() == 2:
-            obs = obs.unsqueeze(0) 
+            obs = obs.unsqueeze(0)
 
         B, S, F = obs.shape
-        assert S == self.seq_len and F == self.feat_dim, f"Expected {(self.seq_len, self.feat_dim)}, got {(S, F)}"
+        assert S == self.seq_len and F == self.feat_dim, (
+            f"Expected {(self.seq_len, self.feat_dim)}, got {(S, F)}"
+        )
 
-        x = self.input_proj(obs)  
+        x = self.input_proj(obs)
 
-        # Encode sequence 
-        x = self.encoder(x)       
+        # Encode sequence
+        x = self.encoder(x)
 
         # Pool across 11 tokens
-        x_pooled = x.mean(dim=1)  
+        x_pooled = x.mean(dim=1)
         x_pooled = self.norm(x_pooled)
 
         # Policy logits
-        policy_logits = self.policy_head(x_pooled) 
-        policy_logits = policy_logits.view(B, 2, self.act_size)  
+        policy_logits = self.policy_head(x_pooled)
+        policy_logits = policy_logits.view(B, 2, self.act_size)
 
         if action_mask is not None:
             if action_mask.dim() == 2:
