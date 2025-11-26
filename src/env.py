@@ -326,7 +326,7 @@ class SimEnv(Gen9VGCEnv):
 
     @classmethod
     def build_env(cls):
-        teams_dir = "./teams"
+        teams_dir = "../teams"
         team_files = [
             path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
         ]
