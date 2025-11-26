@@ -12,6 +12,10 @@ from encoder import ACT_SIZE
 
 
 class PseudoPolicy(nn.Module):
+    """
+    NOTE: this inputs tensors of the old batch size (this test no longer applies to the new observation dimension)
+    It is only kept as reference to integrate the new policy network
+    """
     def __init__(self, observation_dim, action_dim, hidden_size=128):
         super().__init__()
         self.action_dim = action_dim
