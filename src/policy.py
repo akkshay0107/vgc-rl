@@ -6,56 +6,43 @@ from encoder import ACT_SIZE, OBS_DIM
 
 
 class PolicyNet(nn.Module):
-    """
-    Actor-critic model
-
-    Input:
-        obs: (B, 11, 650) or (11, 650) observation from Encoder.encode_battle_state
-        action_mask: (B, 2, ACT_SIZE) or (2, ACT_SIZE), 1 = legal, 0 = illegal
-
-    Output:
-        policy_logits: (B, 2, ACT_SIZE)
-        policy_log_probs: (B, 2) - log probs of sampled actions
-        sampled_actions: (B, 2) - sampled actions respecting mutual exclusivity
-        value: (B,)
-    """
-
     def __init__(
-        self,
-        obs_dim=OBS_DIM,  # (11, 650)
-        act_size=ACT_SIZE,
-        hidden_size: int = 256,
-        num_layers: int = 3,
-        dropout: float = 0.1,
+        self, obs_dim=OBS_DIM, act_size=ACT_SIZE, hidden_size=256, num_layers=3, dropout=0.1
     ):
         super().__init__()
         self.seq_len, self.feat_dim = obs_dim
         self.act_size = act_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Flatten input: (B, 11, 650) -> (B, 11 * 650)
+        # Flatten the 2D observation into 1D for linear layers
         input_dim = self.seq_len * self.feat_dim
 
         layers = []
-        layers.append(nn.Linear(input_dim, hidden_size))
-        layers.append(nn.LayerNorm(hidden_size))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(dropout))
-
+        # Initial linear layer with normalization, activation, and dropout
+        layers.extend(
+            [
+                nn.Linear(input_dim, hidden_size),
+                nn.LayerNorm(hidden_size),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            ]
+        )
+        # Additional hidden layers with same pattern
         for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.LayerNorm(hidden_size))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-
+            layers.extend(
+                [
+                    nn.Linear(hidden_size, hidden_size),
+                    nn.LayerNorm(hidden_size),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                ]
+            )
         self.shared_backbone = nn.Sequential(*layers)
 
-        # outputs logits for both Pokemon positions
+        # Outputs logits for actions of both Pokemon (2 * ACT_SIZE)
         self.policy_head = nn.Linear(hidden_size, 2 * act_size)
-
-        # outputs scalar value estimate
+        # Outputs a scalar value estimate for the current state
         self.value_head = nn.Linear(hidden_size, 1)
-
         self.to(self.device)
 
     def forward(
@@ -63,133 +50,107 @@ class PolicyNet(nn.Module):
         obs: torch.Tensor,
         action_mask: torch.Tensor | None = None,
         sample_actions: bool = True,
-    ):
-        """
-        Forward pass with masking, action sampling, and log-prob computation for SAC.
-
-        Args:
-            obs: (B, 11, 650) or (11, 650)
-            action_mask: (B, 2, ACT_SIZE) or (2, ACT_SIZE), 1 = legal, 0 = illegal
-            sample_actions: If True, sample actions and return log_probs/actions
-
-        Returns:
-            policy_logits: (B, 2, ACT_SIZE)
-            policy_log_probs: (B, 2) - log probs of sampled actions
-            sampled_actions: (B, 2) - sampled actions respecting mutual exclusivity
-            value: (B,)
-        """
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor]:
+        # Add batch dimension if missing
         if obs.dim() == 2:
             obs = obs.unsqueeze(0)
-
         B, S, F = obs.shape
-        assert S == self.seq_len and F == self.feat_dim, (
-            f"Expected {(self.seq_len, self.feat_dim)}, got {(S, F)}"
-        )
+        assert S == self.seq_len and F == self.feat_dim
 
-        obs_flat = obs.view(B, -1).to(self.device)
-        x = self.shared_backbone(obs_flat)  # (B, hidden_size)
+        # Flatten observation (B, S, F) -> (B, S*F), move to device
+        x = self.shared_backbone(obs.view(B, -1).to(self.device))
 
-        # Policy logits
-        policy_logits = self.policy_head(x)  # (B, 2 * ACT_SIZE)
-        policy_logits = policy_logits.view(B, 2, self.act_size)  # (B, 2, ACT_SIZE)
+        policy_logits = self.policy_head(x).view(B, 2, self.act_size)
+        value = self.value_head(x).squeeze(-1)
 
-        if action_mask is None or not sample_actions:
-            # Return logits only (no masking or sampling)
-            value = self.value_head(x).squeeze(-1)  # (B,)
+        # Return raw logits if no masking or sampling needed
+        if not sample_actions or action_mask is None:
             return policy_logits, None, None, value
 
-        # Expand mask if needed and move to device
-        if action_mask.dim() == 2:
-            action_mask = action_mask.unsqueeze(0).expand(B, -1, -1)
-        action_mask = action_mask.to(self.device)
+        # Expand action_mask to match batch size if 2D, and move to device
+        action_mask = (
+            action_mask.unsqueeze(0).expand(B, -1, -1).to(self.device)
+            if action_mask.dim() == 2
+            else action_mask.to(self.device)
+        )
 
-        mask = action_mask == 0
-        logits = policy_logits.masked_fill(mask, float("-inf"))
+        # Mask logits with -inf where actions are illegal
+        logits = self._apply_masks(policy_logits.clone(), action_mask)
 
-        # Sample action for mon 1
-        cat1 = Categorical(logits=logits[:, 0, :])
-        action1 = cat1.sample()  # Keep gradients for SAC training
+        # Sample actions for first Pokemon using masked logits distribution
+        cat1 = Categorical(logits=logits[:, 0])
+        action1 = cat1.sample()
         log_prob1 = cat1.log_prob(action1)
 
-        mask2 = action_mask[:, 1, :].clone()
-
-        # VGC mutual exclusivity adjustments
-        idx = action1  # (B,)
-        for b in range(B):
-            if 1 <= idx[b] <= 6:
-                # If switched to slot idx, mask for other mon
-                mask2[b, idx[b]] = 0
-            if 26 < idx[b] <= 46:  # Tera range for mon 1
-                mask2[b, 27:47] = 0
-            if idx[b] == 0:  # Pass
-                mask2[b, 0] = 0
-                if mask2[b].sum() == 0:  # no valid action forced to double pass
-                    mask2[b, 0] = 1
-
-        mask2 = mask2 == 0
-        logits[:, 1, :].masked_fill_(mask2, float("-inf"))
-
-        # Sample action for mon 2 from adjusted distribution
-        cat2 = Categorical(logits=logits[:, 1, :])
+        # Adjust logits for the second Pokemon to enforce mutual exclusivity with action1
+        logits = self._apply_sequential_masks(logits, action1, action_mask)
+        cat2 = Categorical(logits=logits[:, 1])
         action2 = cat2.sample()
         log_prob2 = cat2.log_prob(action2)
 
-        # Stack actions and log probs
-        sampled_actions = torch.stack([action1, action2], dim=-1)  # (B, 2)
-        policy_log_probs = torch.stack([log_prob1, log_prob2], dim=-1)  # (B, 2)
+        return (
+            policy_logits,
+            torch.stack([log_prob1, log_prob2], -1),
+            torch.stack([action1, action2], -1),
+            value,
+        )
 
-        # Value estimate
-        value = self.value_head(x).squeeze(-1)  # (B,)
+    def evaluate_actions(
+        self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Get logits and value prediction without sampling
+        policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
+        B = obs.shape[0] if obs.dim() == 3 else 1
 
-        return policy_logits, policy_log_probs, sampled_actions, value
+        if action_mask is not None:
+            # Expand and mask logits for illegal actions
+            action_mask = (
+                action_mask.unsqueeze(0).expand(B, -1, -1).to(self.device)
+                if action_mask.dim() == 2
+                else action_mask.to(self.device)
+            )
 
+            logits = self._apply_masks(policy_logits.clone(), action_mask)
+            # Apply mutual exclusivity mask deterministically for given actions
+            logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask)
+        else:
+            logits = policy_logits
 
-def evaluate_actions(
-    self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
-):
-    """
-    Evaluate given actions for SAC loss computation (log_prob only, no sampling).
-    """
-    policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
+        # Calculate log probabilities of provided actions under the masked distributions
+        cat1 = Categorical(logits=logits[:, 0])
+        cat2 = Categorical(logits=logits[:, 1])
+        log_prob1 = cat1.log_prob(actions[:, 0])
+        log_prob2 = cat2.log_prob(actions[:, 1])
 
-    B = obs.shape[0] if obs.dim() == 3 else 1
-    action1, action2 = actions[:, 0], actions[:, 1]
+        return torch.stack([log_prob1, log_prob2], -1), value
 
-    # Apply masking to logits
-    if action_mask is not None:
-        if action_mask.dim() == 2:
-            action_mask = action_mask.unsqueeze(0).expand(B, -1, -1)
-        action_mask = action_mask.to(self.device)
+    def _apply_masks(self, logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
+        # Replace logits of illegal actions with -inf so they have zero probability
         mask = action_mask == 0
-        masked_logits = policy_logits.masked_fill(mask, float("-inf"))
-    else:
-        masked_logits = policy_logits
+        return logits.masked_fill(mask, float("-inf"))
 
-    # Mutual exclusivity masking (deterministic for given actions)
-    if action_mask is not None:
-        mask2 = action_mask[:, 1, :].clone()
-    else:
-        mask2 = torch.ones(B, self.act_size, device=self.device, dtype=torch.bool)
+    def _apply_sequential_masks(
+        self, logits: torch.Tensor, action1: torch.Tensor, action_mask: torch.Tensor
+    ) -> torch.Tensor:
+        mask2 = action_mask[:, 1].clone()
 
-    for b in range(B):
-        idx = action1[b]
-        if 1 <= idx <= 6:
-            mask2[b, idx] = 0
-        if 26 < idx <= 46:
-            mask2[b, 27:47] = 0
-        if idx == 0:
-            mask2[b, 0] = 0
-            if mask2[b].sum() == 0:
-                mask2[b, 0] = 1
+        # Create boolean masks for each action types of Pokemon 1
+        switch_mask = (1 <= action1) & (action1 <= 6)
+        tera_mask = (26 < action1) & (action1 <= 46)
+        pass_mask = action1 == 0
 
-    mask2 = mask2 == 0
-    masked_logits[:, 1, :].masked_fill_(mask2, float("-inf"))
+        # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
+        mask2[switch_mask, action1[switch_mask]] = 0
 
-    # Compute log probs for given actions
-    cat1 = Categorical(logits=masked_logits[:, 0, :])
-    cat2 = Categorical(logits=masked_logits[:, 1, :])
-    log_prob1 = cat1.log_prob(action1)
-    log_prob2 = cat2.log_prob(action2)
-    log_probs = torch.stack([log_prob1, log_prob2], dim=-1)
+        # If Pokemon 1 uses terastallize in certain moves, Pokemon 2 cannot also tera in that range
+        mask2[tera_mask, 27:47] = 0
 
-    return log_probs, value
+        # If Pokemon 1 passes, Pokemon 2 cannot pass as well unless no valid moves left
+        mask2[pass_mask, 0] = 0
+
+        # If no valid action remains, force pass action to be valid for Pokemon 2
+        no_valid = mask2.sum(-1) == 0
+        mask2[no_valid, 0] = 1
+
+        logits[:, 1].masked_fill_(mask2 == 0, float("-inf"))
+        return logits
