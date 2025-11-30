@@ -58,7 +58,7 @@ def compute_entropy(logits: torch.Tensor, action_mask: torch.Tensor):
     entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=2)  # sum -p log p over the action axis
 
     # sum over the pokemon axis and take the mean over the batch axis
-    return entropy.sum(dim = -1).mean()
+    return entropy.sum(dim=-1).mean()
 
 
 def update_policy():

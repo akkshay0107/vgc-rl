@@ -318,12 +318,16 @@ class Encoder:
             )  # (1, 650)
         )
 
+        assert len(all_embeddings) == 1
+
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
             # print(mon_txt)
             # print()
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
+
+        assert len(all_embeddings) == 5
 
         # print("-"*100)
         # print()
@@ -337,6 +341,7 @@ class Encoder:
 
         # print("-"*100)
         # print()
+        assert len(all_embeddings) == 11
         return torch.cat(all_embeddings, dim=0)  # should be (11, 650)
 
     @staticmethod
