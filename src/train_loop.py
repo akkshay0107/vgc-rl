@@ -68,7 +68,7 @@ def update_policy():
     _, _, _, values = policy(obs_batch, mask_batch, sample_actions=False)
 
     target_values = (
-        reward_batch.unsqueeze(-1) + gamma * (1 - done_batch.unsqueeze(-1)) * next_values
+        reward_batch + gamma * (1 - done_batch) * next_values
     )
     critic_loss = F.mse_loss(values, target_values.detach())
 
