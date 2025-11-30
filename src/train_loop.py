@@ -15,7 +15,10 @@ max_steps_per_episode = 100
 gamma = 0.99
 lr = 3e-4
 batch_size = 64
-buffer_size = 10000
+# Small buffer size maintained to keep the buffer dominated with replays
+# from newer policies. This should get it closer to an on-policy training
+buffer_size = 2000
+batch_updates = 4  # mini batch updates per call to update_policy()
 entropy_coef = 0.01
 
 env = SimEnv.build_env()
@@ -48,41 +51,53 @@ def store_transition(obs, action, reward, next_obs, action_mask, done):
     replay_buffer.append((obs, action, reward, next_obs, action_mask, done))
 
 
+def compute_entropy(logits: torch.Tensor, action_mask: torch.Tensor):
+    masked_logits = logits.masked_fill(action_mask == 0, float("-inf"))  # (B, 2, 47)
+    probs = torch.softmax(masked_logits, dim=-1)
+
+    entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=2)  # sum -p log p over the action axis
+
+    # sum over the pokemon axis and take the mean over the batch axis
+    return entropy.sum(dim = -1).mean()
+
+
 def update_policy():
     if len(replay_buffer) < batch_size:
         return
 
-    batch = np.random.choice(len(replay_buffer), batch_size, replace=False)
-    transitions = [replay_buffer[i] for i in batch]
+    for _ in range(batch_updates):
+        batch = np.random.choice(len(replay_buffer), batch_size, replace=False)
+        transitions = [replay_buffer[i] for i in batch]
 
-    obs_batch = torch.stack([t[0] for t in transitions])
-    action_batch = torch.stack([torch.tensor(t[1], dtype=torch.long) for t in transitions])
-    reward_batch = torch.tensor([t[2] for t in transitions], dtype=torch.float32)
-    next_obs_batch = torch.stack([t[3] for t in transitions])
-    mask_batch = torch.stack([t[4] for t in transitions])
-    done_batch = torch.tensor([t[5] for t in transitions], dtype=torch.float32)
+        obs_batch = torch.stack([t[0] for t in transitions])
+        action_batch = torch.stack([torch.tensor(t[1], dtype=torch.long) for t in transitions])
+        reward_batch = torch.tensor([t[2] for t in transitions], dtype=torch.float32)
+        next_obs_batch = torch.stack([t[3] for t in transitions])
+        mask_batch = torch.stack([t[4] for t in transitions])
+        done_batch = torch.tensor([t[5] for t in transitions], dtype=torch.float32)
 
-    with torch.no_grad():
-        _, _, _, next_values = policy(next_obs_batch, mask_batch, sample_actions=False)
+        with torch.no_grad():
+            _, _, _, next_values = policy(next_obs_batch, mask_batch, sample_actions=False)
 
-    _, _, _, values = policy(obs_batch, mask_batch, sample_actions=False)
+        logits_batch, _, _, values = policy(obs_batch, mask_batch, sample_actions=False)
 
-    target_values = (
-        reward_batch + gamma * (1 - done_batch) * next_values
-    )
-    critic_loss = F.mse_loss(values, target_values.detach())
+        target_values = reward_batch + gamma * (1 - done_batch) * next_values
+        critic_loss = F.mse_loss(values, target_values.detach())
 
-    log_probs, _ = policy.evaluate_actions(obs_batch, action_batch, mask_batch)
-    advantages = (target_values - values).detach()
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-    actor_loss = -(log_probs * advantages.unsqueeze(-1)).mean() + entropy_coef * log_probs.mean()
+        log_probs, _ = policy.evaluate_actions(obs_batch, action_batch, mask_batch)
+        advantages = (target_values - values).detach()
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-    loss = critic_loss + actor_loss
+        policy_loss = -(log_probs * advantages.unsqueeze(-1)).mean()
+        entropy = compute_entropy(logits_batch, mask_batch)
+        actor_loss = policy_loss - entropy_coef * entropy
 
-    optimizer.zero_grad()
-    loss.backward()
-    torch.nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
-    optimizer.step()
+        loss = critic_loss + actor_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
+        optimizer.step()
 
 
 # optional code below to load a checkpoint
