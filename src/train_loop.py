@@ -1,3 +1,4 @@
+import os
 from collections import deque
 
 import numpy as np
@@ -21,6 +22,26 @@ env = SimEnv.build_env()
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
 optimizer = optim.Adam(policy.parameters(), lr=lr)
 replay_buffer = deque(maxlen=buffer_size)
+
+
+def save_checkpoint(path, episode):
+    torch.save(
+        {
+            "episode": episode,
+            "model_state_dict": policy.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        },
+        path,
+    )
+
+
+def load_checkpoint(path):
+    if not os.path.exists(path):
+        return None
+    checkpoint = torch.load(path)
+    policy.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    return checkpoint.get("episode", None)
 
 
 def store_transition(obs, action, reward, next_obs, action_mask, done):
@@ -64,7 +85,12 @@ def update_policy():
     optimizer.step()
 
 
-for episode in range(num_episodes):
+# optional code below to load a checkpoint
+start_episode = (
+    load_checkpoint("./checkpoints/checkpoint_<episode_num>.pt") or 0
+)  # fails here since path doesnt exist
+
+for episode in range(start_episode, num_episodes):
     obs, _ = env.reset()
     episode_rewards = []
 
@@ -121,6 +147,8 @@ for episode in range(num_episodes):
 
     if episode % 10 == 0:
         update_policy()
+        save_checkpoint(f"./checkpoints/checkpoint_{episode}.pt", episode + 1)
+        print(f"Checkpoint saved at episode {episode}")
 
     print(
         f"Episode {episode + 1}/{num_episodes}, reward: {sum(episode_rewards):.3f}, buffer: {len(replay_buffer)}"

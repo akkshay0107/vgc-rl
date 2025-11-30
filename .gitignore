@@ -16,3 +16,6 @@ wheels/
 # Inverts
 !.python-version
 !.gitignore
+
+# Checkpoints
+checkpoints/*
