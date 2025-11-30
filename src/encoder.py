@@ -133,6 +133,22 @@ class Encoder:
             p1_mon_txt.append(mon_txt)
             p1_mon_arr.append(mon_arr)
 
+        if len(p1_mon_txt) != 4:
+            info = {}
+            info["fainted"] = []
+            info["active"] = []
+            info["back"] = []
+            for mon in battle.team.values():
+                if mon.fainted:
+                    info["fainted"].append(mon.species)
+                elif mon in battle.active_pokemon:
+                    info["active"].append(mon.species)
+                elif mon in possible_switches:
+                    info["back"].append(mon.species)
+            raise RuntimeError(
+                f"Embeddings length doesnt match. Counts: {info} Details: {p1_mon_txt}"
+            )
+
         p2_mon_txt = []
         p2_mon_arr = []
         revealed = [mon for mon in battle.opponent_team.values() if mon.revealed]
@@ -141,7 +157,7 @@ class Encoder:
             if mon.fainted:
                 status = 3
             elif mon in battle.opponent_active_pokemon:
-                status = 2
+                status = 1
             elif mon.revealed:
                 status = 2
             elif len(revealed) == 4:
@@ -318,16 +334,12 @@ class Encoder:
             )  # (1, 650)
         )
 
-        assert len(all_embeddings) == 1
-
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
             # print(mon_txt)
             # print()
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
-
-        assert len(all_embeddings) == 5
 
         # print("-"*100)
         # print()
@@ -341,7 +353,16 @@ class Encoder:
 
         # print("-"*100)
         # print()
-        assert len(all_embeddings) == 11
+        # if len(all_embeddings) != 11:
+        #     info = {}
+        #     info["p1_txt"] = p1_txt
+        #     info["p1_arr"] = p1_arr
+        #     info["p2_txt"] = opp_txt
+        #     info["p2_arr"] = opp_arr
+        #     raise RuntimeError(
+        #         f"Embeddings length doesnt match. Lens: {[len(p1_txt), len(p1_arr), len(opp_txt), len(opp_arr)]} Details: {info}"
+        #     )
+
         return torch.cat(all_embeddings, dim=0)  # should be (11, 650)
 
     @staticmethod
