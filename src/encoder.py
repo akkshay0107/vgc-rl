@@ -11,7 +11,7 @@ from transformers import BertModel, BertTokenizer
 
 from lookups import ITEM_DESCRIPTION, MOVES, POKEMON, POKEMON_DESCRIPTION
 
-OBS_DIM = (11, 650)  # 624 from TinyBERT and 26 for additional information
+OBS_DIM = (13, 650)  # 624 from TinyBERT and 26 for additional information
 # Define action space parameters (from gen9vgcenv.py)
 NUM_SWITCHES = 6
 NUM_MOVES = 4
@@ -41,8 +41,12 @@ class Encoder:
             status_str = "This pokemon IS ACTIVE. It is currently on the field."
         elif status == 2:
             status_str = "This pokemon is IN THE BACK. It is able to switch in."
-        else:
+        elif status == 3:
             status_str = "This pokemon has FAINTED. It no longer participates in the battle."
+        elif status == 4:
+            status_str = "This pokemon CANNOT BE SWITCHED IN. May or may not be in team."
+        else:
+            status_str = "Unknown status."
 
         movelist = list(pokemon.moves.keys())
         if not movelist:
@@ -75,6 +79,7 @@ class Encoder:
         1 = active
         2 = benched
         3 = fainted
+        4 = stuck out (dropped from own team / pokemon inside is trapped)
         """
         # Text input for each pokemon
         pokemon_str = Encoder._get_pokemon_as_text(pokemon, status)
@@ -128,26 +133,10 @@ class Encoder:
             elif mon in possible_switches:
                 status = 2
             else:
-                continue
+                status = 4
             mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
             p1_mon_txt.append(mon_txt)
             p1_mon_arr.append(mon_arr)
-
-        if len(p1_mon_txt) != 4:
-            info = {}
-            info["fainted"] = []
-            info["active"] = []
-            info["back"] = []
-            for mon in battle.team.values():
-                if mon.fainted:
-                    info["fainted"].append(mon.species)
-                elif mon in battle.active_pokemon:
-                    info["active"].append(mon.species)
-                elif mon in possible_switches:
-                    info["back"].append(mon.species)
-            raise RuntimeError(
-                f"Embeddings length doesnt match. Counts: {info} Details: {p1_mon_txt}"
-            )
 
         p2_mon_txt = []
         p2_mon_arr = []
@@ -314,8 +303,8 @@ class Encoder:
 
         # combine the stuff above into one observation
         # row 0: pad p1 and opp locals into a string and pass it through encoder (1, 624)
-        # row 1-4: pokemons for p1 (4, 650)
-        # rows 6-11: pokemons for p2 (6, 650)
+        # row 1-6: pokemons for p1 (6, 650)
+        # rows 7-12: pokemons for p2 (6, 650)
 
         all_embeddings = []
 
@@ -335,35 +324,16 @@ class Encoder:
         )
 
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
-            # print(mon_txt)
-            # print()
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
-
-        # print("-"*100)
-        # print()
 
         for mon_txt, mon_arr in zip(opp_txt, opp_arr):
-            # print(mon_txt)
-            # print()
             emb = get_cls_mean_concat(mon_txt)
             extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
             all_embeddings.append(torch.cat([emb, extra], dim=1))
 
-        # print("-"*100)
-        # print()
-        # if len(all_embeddings) != 11:
-        #     info = {}
-        #     info["p1_txt"] = p1_txt
-        #     info["p1_arr"] = p1_arr
-        #     info["p2_txt"] = opp_txt
-        #     info["p2_arr"] = opp_arr
-        #     raise RuntimeError(
-        #         f"Embeddings length doesnt match. Lens: {[len(p1_txt), len(p1_arr), len(opp_txt), len(opp_arr)]} Details: {info}"
-        #     )
-
-        return torch.cat(all_embeddings, dim=0)  # should be (11, 650)
+        return torch.cat(all_embeddings, dim=0)  # should be (13, 650)
 
     @staticmethod
     def get_action_mask(battle: AbstractBattle):
