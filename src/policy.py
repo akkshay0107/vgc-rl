@@ -1,49 +1,43 @@
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 from torch.distributions import Categorical
 
 from encoder import ACT_SIZE, OBS_DIM
 
 
 class PolicyNet(nn.Module):
-    def __init__(
-        self, obs_dim=OBS_DIM, act_size=ACT_SIZE, hidden_size=256, num_layers=3, dropout=0.1
-    ):
+    def __init__(self, obs_dim=OBS_DIM, act_size=ACT_SIZE, net_arch=[256, 256, 128]):
         super().__init__()
         self.seq_len, self.feat_dim = obs_dim
         self.act_size = act_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Flatten the 2D observation into 1D for linear layers
         input_dim = self.seq_len * self.feat_dim
 
-        layers = []
-        # Initial linear layer with normalization, activation, and dropout
-        layers.extend(
-            [
-                nn.Linear(input_dim, hidden_size),
-                nn.LayerNorm(hidden_size),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
-        )
-        # Additional hidden layers with same pattern
-        for _ in range(num_layers - 1):
-            layers.extend(
-                [
-                    nn.Linear(hidden_size, hidden_size),
-                    nn.LayerNorm(hidden_size),
-                    nn.ReLU(),
-                    nn.Dropout(dropout),
-                ]
-            )
+        layers = [nn.Linear(input_dim, net_arch[0]), nn.ReLU()]
+        for h_in, h_out in zip(net_arch[:-1], net_arch[1:]):
+            layers.extend([nn.Linear(h_in, h_out), nn.ReLU()])
         self.shared_backbone = nn.Sequential(*layers)
 
-        # Outputs logits for actions of both Pokemon (2 * ACT_SIZE)
-        self.policy_head = nn.Linear(hidden_size, 2 * act_size)
-        # Outputs a scalar value estimate for the current state
-        self.value_head = nn.Linear(hidden_size, 1)
+        # outputs logits for each possible action for each pokemon
+        self.policy_head = nn.Linear(net_arch[-1], 2 * act_size)
+        # outputs scalar value from the state V(s)
+        self.value_head = nn.Linear(net_arch[-1], 1)
+
         self.to(self.device)
+        self._init_weights()
+
+    def _init_weights(self):
+        # orthogonal initialization of the network
+        gain_hidden = init.calculate_gain("relu")
+        init.orthogonal_(self.policy_head.weight, gain=0.01)
+        init.zeros_(self.policy_head.bias)
+        init.orthogonal_(self.value_head.weight, gain=1.0)
+        init.zeros_(self.value_head.bias)
+        for module in self.shared_backbone:
+            if isinstance(module, nn.Linear):
+                init.orthogonal_(module.weight, gain=gain_hidden)
+                init.zeros_(module.bias)
 
     def forward(
         self,
