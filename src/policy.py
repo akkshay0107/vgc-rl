@@ -49,7 +49,10 @@ class PolicyNet(nn.Module):
         if obs.dim() == 2:
             obs = obs.unsqueeze(0)
         B, S, F = obs.shape
-        assert S == self.seq_len and F == self.feat_dim
+
+        # changed assertion to error for debugging
+        if S != self.seq_len or F != self.feat_dim:
+            raise ValueError(f"Got shape ({S}, {F}). Expected({self.seq_len}, {self.feat_dim})")
 
         # Flatten observation (B, S, F) -> (B, S*F), move to device
         x = self.shared_backbone(obs.view(B, -1).to(self.device))
