@@ -23,6 +23,8 @@ class PolicyNet(nn.Module):
         self.policy_head = nn.Linear(net_arch[-1], 2 * act_size)
         # outputs scalar value from the state V(s)
         self.value_head = nn.Linear(net_arch[-1], 1)
+        # auxillary value head
+        self.aux_value_head = nn.Linear(net_arch[-1], 1)
 
         self.to(self.device)
         self._init_weights()
@@ -30,10 +32,16 @@ class PolicyNet(nn.Module):
     def _init_weights(self):
         # orthogonal initialization of the network
         gain_hidden = init.calculate_gain("relu")
+
         init.orthogonal_(self.policy_head.weight, gain=0.01)
         init.zeros_(self.policy_head.bias)
+
         init.orthogonal_(self.value_head.weight, gain=1.0)
         init.zeros_(self.value_head.bias)
+
+        init.orthogonal_(self.aux_value_head.weight, gain=1.0)
+        init.zeros_(self.aux_value_head.bias)
+
         for module in self.shared_backbone:
             if isinstance(module, nn.Linear):
                 init.orthogonal_(module.weight, gain=gain_hidden)
@@ -44,6 +52,7 @@ class PolicyNet(nn.Module):
         obs: torch.Tensor,
         action_mask: torch.Tensor | None = None,
         sample_actions: bool = True,
+        use_aux_value: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor]:
         # Add batch dimension if missing
         if obs.dim() == 2:
@@ -58,7 +67,9 @@ class PolicyNet(nn.Module):
         x = self.shared_backbone(obs.view(B, -1).to(self.device))
 
         policy_logits = self.policy_head(x).view(B, 2, self.act_size)
-        value = self.value_head(x).squeeze(-1)
+        value = (
+            self.aux_value_head(x).squeeze(-1) if use_aux_value else self.value_head(x).squeeze(-1)
+        )
 
         # Return raw logits if no masking or sampling needed
         if not sample_actions or action_mask is None:
@@ -91,6 +102,12 @@ class PolicyNet(nn.Module):
             torch.stack([action1, action2], -1),
             value,
         )
+
+    def get_aux_value(self, obs: torch.Tensor) -> torch.Tensor:
+        if obs.dim() == 2:
+            obs = obs.unsqueeze(0)
+        x = self.shared_backbone(obs.view(obs.size(0), -1).to(self.device))
+        return self.aux_value_head(x).squeeze(-1)
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
