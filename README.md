@@ -78,3 +78,12 @@ node pokemon-showdown start --no-security
 ```
 
 It should default to starting the server at port 8000. Turn off any browser shields / blocker and retry if server fails to load properly.
+
+## Results (so far)
+
+Our of end of semester work has been summarised in a [poster](assets/MLP_Poster.pdf) we made.
+
+| Opponent | Winrate |
+| -------- | ------- |
+| RandomPlayer | 89.2% |
+| MaxBasePowerPlayer | 38% |
