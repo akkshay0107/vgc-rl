@@ -109,6 +109,22 @@ class PolicyNet(nn.Module):
         x = self.shared_backbone(obs.view(obs.size(0), -1).to(self.device))
         return self.aux_value_head(x).squeeze(-1)
 
+    def get_policy_probs(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
+        policy_logits, _, _, _ = self(obs, action_mask, sample_actions=False)
+
+        if action_mask is not None:
+            B = obs.shape[0] if obs.dim() == 3 else 1
+            action_mask = (
+                action_mask.unsqueeze(0).expand(B, -1, -1).to(self.device)
+                if action_mask.dim() == 2
+                else action_mask.to(self.device)
+            )
+            logits = self._apply_masks(policy_logits, action_mask)
+        else:
+            logits = policy_logits
+
+        return torch.softmax(logits, dim=-1)
+
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
