@@ -11,19 +11,18 @@ from env import SimEnv
 from policy import PolicyNet
 
 # PPG Hyperparameters
-num_episodes = 2500
+num_episodes = 100  # num of times entire loop (PPO + Aux phase) takes place
 gamma = 0.99
 gae_lambda = 0.95
 lr = 5e-4
-n_policy_iterations = 32
-n_aux_epochs = 6
-ppo_epochs = 1
-value_epochs = 1
+n_policy_iterations = 32  # Number of PPO iters before the Aux phase
+n_aux_epochs = 6  # Number of minibatches sampled in the Aux phase
+ppo_epochs = 1  # Number of minibatches sampled per PPO iter
 batch_size = 64
 clip_range = 0.2
 entropy_coef = 0.01
 value_coef = 0.5
-beta_clone = 1.0
+beta_clone = 1.0  # weight given to KL divergence term for Aux phase
 max_grad_norm = 0.5
 
 env = SimEnv.build_env()
@@ -54,13 +53,13 @@ def load_checkpoint(path):
     return checkpoint.get("episode", None)
 
 
-def compute_gae(rewards, values, dones, next_value, gamma=gamma, gae_lambda=gae_lambda):
+def compute_gae(rewards, values, dones, gamma=gamma, gae_lambda=gae_lambda):
     T, B = rewards.shape
     advantages = torch.zeros(T, B, dtype=torch.float32, device=rewards.device)
     gae = torch.zeros(B, dtype=torch.float32, device=rewards.device)
 
     for t in reversed(range(T)):
-        next_val = next_value if t == T - 1 else values[t + 1]  # (B,)
+        next_val = torch.zeros_like(values[t]) if t == T - 1 else values[t + 1]  # (B,)
         mask = 1.0 - dones[t]  # (B,)
         delta = rewards[t] + gamma * next_val * mask - values[t]  # (B,)
         gae = delta + gamma * gae_lambda * mask * gae  # (B,)
@@ -100,6 +99,7 @@ def collect_rollout():
         done1 = terminated[env.agent1.username] or truncated[env.agent1.username]
         done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
 
+        # each batch contains both player and opponents perspective
         episode_data.append(
             {
                 "obs": obs_batch,
@@ -116,130 +116,98 @@ def collect_rollout():
         )
 
         obs = next_obs
-
         if done1 or done2:
-            with torch.no_grad():
-                next_obs_batch = torch.stack(
-                    [next_obs[env.agent1.username], next_obs[env.agent2.username]], dim=0
-                )
-                next_mask_batch = torch.stack(
-                    [Encoder.get_action_mask(env.battle1), Encoder.get_action_mask(env.battle2)],  # type: ignore
-                    dim=0,
-                )
-                _, _, _, next_values = policy(next_obs_batch, next_mask_batch, sample_actions=False)
             break
 
-    return episode_data, next_values
+    return episode_data
 
 
+# TODO: parallelize the policy phase
 def policy_phase():
-    episode_data, next_values = collect_rollout()
+    episode_data = collect_rollout()
 
-    obs_list = torch.stack([d["obs"] for d in episode_data])
-    actions_list = torch.stack([d["actions"] for d in episode_data])
-    old_log_probs_list = torch.stack([d["log_probs"] for d in episode_data])
+    def flat_collect(by):
+        res = torch.stack([d[by] for d in episode_data])
+        if len(res.shape) <= 2:
+            return res.view(-1)
+        return res.view(-1, *res.shape[2:])
+
+    # all below of shape (turns, 2, *)
     values_list = torch.stack([d["values"] for d in episode_data])
     rewards_list = torch.stack([d["rewards"] for d in episode_data])
     dones_list = torch.stack([d["dones"] for d in episode_data])
-    masks_list = torch.stack([d["action_masks"] for d in episode_data])
 
     advantages, returns = compute_gae(
         rewards=rewards_list,
         values=values_list,
         dones=dones_list,
-        next_value=next_values,
-    )  # advantages, returns: (T, 2)
+    )  # advantages, returns: (turns, 2)
 
     # Normalize advantages
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+    flat_obs = flat_collect("obs")
+    flat_act = flat_collect("actions")
+    flat_masks = flat_collect("action_masks")
+    flat_old_log_prob = flat_collect("log_probs")
+    flat_adv = advantages.view(-1)
+    flat_ret = returns.view(-1)
     with torch.no_grad():
-        # Flatten turns and batch
-        T = obs_list.shape[0]
-        B = obs_list.shape[1]
-        flat_obs = obs_list.view(T * B, *obs_list.shape[2:])
-        flat_masks = masks_list.view(T * B, *masks_list.shape[2:])
-        policy_probs = policy.get_policy_probs(flat_obs, flat_masks)  # (T*B, act_dim)
+        policy_probs = policy.get_policy_probs(flat_obs, flat_masks)
 
-    for t in range(len(episode_data)):
-        for agent_idx in range(2):
-            idx = t * 2 + agent_idx
-            replay_buffer.append(
-                {
-                    "obs": obs_list[t, agent_idx],
-                    "action_mask": masks_list[t, agent_idx],
-                    "returns": returns[t, agent_idx],
-                    "old_policy_probs": policy_probs[idx].detach(),
-                }
-            )
+    # Filling out replay buffer
+    sz = flat_obs.shape[0]
+    for t in range(sz):
+        replay_buffer.append(
+            {
+                "obs": flat_obs[t],
+                "action_mask": flat_masks[t],
+                "returns": flat_ret[t],
+                "old_policy_probs": policy_probs[t].detach(),
+            }
+        )
 
-    # Flatten rollout for PPO / value updates
-    T = obs_list.shape[0]
-    B = obs_list.shape[1]
-    flat_obs = obs_list.view(T * B, *obs_list.shape[2:])
-    flat_actions = actions_list.view(T * B, *actions_list.shape[2:])
-    flat_old_log_probs = old_log_probs_list.view(T * B, *old_log_probs_list.shape[2:])
-    flat_advantages = advantages.view(T * B)
-    flat_returns = returns.view(T * B)
-    flat_masks = masks_list.view(T * B, *masks_list.shape[2:])
-
-    # Policy update
-    num_samples = T * B
+    # Sample minibatches and train on minibatch
     for _ in range(ppo_epochs):
-        indices = torch.randperm(num_samples)
-        for start in range(0, num_samples, batch_size):
-            idx = indices[start : start + batch_size]
+        indices = torch.randperm(sz)
+        for start in range(0, sz, batch_size):
+            minibatch = indices[start : start + batch_size]
+            mb_obs = flat_obs[minibatch]
+            mb_act = flat_act[minibatch]
+            mb_old_log_prob = flat_old_log_prob[minibatch]
+            mb_mask = flat_masks[minibatch]
+            mb_adv = flat_adv[minibatch]
+            mb_ret = flat_ret[minibatch]
 
-            obs_batch = flat_obs[idx]
-            actions_batch = flat_actions[idx]
-            old_log_probs_batch = flat_old_log_probs[idx]
-            adv_batch = flat_advantages[idx]
-            masks_batch = flat_masks[idx]
+            new_log_prob, entropy, values = policy.evaluate_actions(
+                mb_obs, mb_act, mb_mask
+            )  # add entropy term later
 
-            log_probs, _ = policy.evaluate_actions(obs_batch, actions_batch, masks_batch)
-            ratio = torch.exp(log_probs - old_log_probs_batch)
-            surr1 = ratio * adv_batch.unsqueeze(-1)
-            surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * adv_batch.unsqueeze(-1)
+            ratio = (new_log_prob - mb_old_log_prob).exp()
+            surr1 = ratio * mb_adv
+            surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * mb_adv
+            policy_loss = -torch.min(surr1, surr2).mean()  # maximize clip objective
 
-            policy_loss = -torch.min(surr1, surr2).mean()
+            value_loss = F.mse_loss(values.squeeze(-1), mb_ret)
+
+            joint_loss = (
+                policy_loss + value_coef * value_loss - entropy_coef * entropy.mean()
+            )  # -ve for entropy since we want to maximize entropy term
 
             optimizer.zero_grad()
-            policy_loss.backward()
+            joint_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
             optimizer.step()
 
-    # Value function update
-    for _ in range(value_epochs):
-        indices = torch.randperm(num_samples)
-        for start in range(0, num_samples, batch_size):
-            idx = indices[start : start + batch_size]
+    return rewards_list.sum().item()
 
-            obs_batch = flat_obs[idx]
-            returns_batch = flat_returns[idx]
-            masks_batch = flat_masks[idx]
-
-            _, _, _, values = policy(
-                obs_batch, masks_batch, sample_actions=False
-            )  # values: (batch,) or (batch,1)
-            value_loss = F.mse_loss(values.squeeze(-1), returns_batch)
-
-            optimizer.zero_grad()
-            value_loss.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-            optimizer.step()
-
-    total_reward = rewards_list.sum().item()
-    return total_reward
-
-
+# TODO: fix this phase to only use log probabilities directly
 def auxiliary_phase():
     if len(replay_buffer) < batch_size:
         return
 
     for _ in range(n_aux_epochs):
-        indices = np.random.choice(
-            len(replay_buffer), min(batch_size, len(replay_buffer)), replace=False
-        )
+        indices = np.random.choice(len(replay_buffer), batch_size, replace=False)
         batch = [replay_buffer[i] for i in indices]
 
         obs_batch = torch.stack([b["obs"] for b in batch])
@@ -251,11 +219,11 @@ def auxiliary_phase():
         aux_values = policy.get_aux_value(obs_batch)
         aux_value_loss = F.mse_loss(aux_values.squeeze(-1), returns_batch)
 
-        # KL divergence loss KL(old || new)
+        # KL divergence loss KL(new || old)
         current_policy_probs = policy.get_policy_probs(obs_batch, mask_batch)
         kl_loss = F.kl_div(
-            torch.log(current_policy_probs + 1e-10),  # log(new)
-            old_policy_probs_batch,  # old
+            torch.log(old_policy_probs_batch + 1e-8),  # log(old)
+            current_policy_probs,  # new
             reduction="batchmean",
         )
 

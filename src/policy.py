@@ -127,7 +127,7 @@ class PolicyNet(nn.Module):
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Get logits and value prediction without sampling
         policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
         B = obs.shape[0] if obs.dim() == 3 else 1
@@ -151,8 +151,14 @@ class PolicyNet(nn.Module):
         cat2 = Categorical(logits=logits[:, 1])
         log_prob1 = cat1.log_prob(actions[:, 0])
         log_prob2 = cat2.log_prob(actions[:, 1])
+        log_prob = torch.stack([log_prob1, log_prob2], -1).sum(-1) # product of independent actions
 
-        return torch.stack([log_prob1, log_prob2], -1), value
+        # Compute entropy for both action distributions
+        entropy1 = cat1.entropy()
+        entropy2 = cat2.entropy()
+        entropy = torch.stack([entropy1, entropy2], -1).mean(-1)  # (B,) average entropy per sample
+
+        return log_prob, entropy, value
 
     def _apply_masks(self, logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
         # Replace logits of illegal actions with -inf so they have zero probability
