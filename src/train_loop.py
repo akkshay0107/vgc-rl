@@ -201,7 +201,6 @@ def policy_phase():
 
     return rewards_list.sum().item()
 
-# TODO: fix this phase to only use log probabilities directly
 def auxiliary_phase():
     if len(replay_buffer) < batch_size:
         return
@@ -222,8 +221,8 @@ def auxiliary_phase():
         # KL divergence loss KL(new || old)
         current_policy_probs = policy.get_policy_probs(obs_batch, mask_batch)
         kl_loss = F.kl_div(
-            torch.log(old_policy_probs_batch + 1e-8),  # log(old)
-            current_policy_probs,  # new
+            torch.log(old_policy_probs_batch + 1e-8),  # log(old) (y_pred)
+            current_policy_probs,  # new (y_true)
             reduction="batchmean",
         )
 

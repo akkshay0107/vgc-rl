@@ -97,7 +97,7 @@ class PolicyNet(nn.Module):
         log_prob2 = cat2.log_prob(action2)
 
         return (
-            policy_logits,
+            logits,
             torch.stack([log_prob1, log_prob2], -1),
             torch.stack([action1, action2], -1),
             value,
@@ -112,17 +112,16 @@ class PolicyNet(nn.Module):
     def get_policy_probs(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
         policy_logits, _, _, _ = self(obs, action_mask, sample_actions=False)
 
-        if action_mask is not None:
-            B = obs.shape[0] if obs.dim() == 3 else 1
-            action_mask = (
-                action_mask.unsqueeze(0).expand(B, -1, -1).to(self.device)
-                if action_mask.dim() == 2
-                else action_mask.to(self.device)
-            )
-            logits = self._apply_masks(policy_logits, action_mask)
-        else:
-            logits = policy_logits
+        if action_mask is None:
+            return torch.softmax(policy_logits, dim=-1)
 
+        B = obs.shape[0] if obs.dim() == 3 else 1
+        action_mask = (
+            action_mask.unsqueeze(0).expand(B, -1, -1).to(self.device)
+            if action_mask.dim() == 2
+            else action_mask.to(self.device)
+        )
+        logits = self._apply_masks(policy_logits, action_mask)
         return torch.softmax(logits, dim=-1)
 
     def evaluate_actions(
@@ -151,12 +150,13 @@ class PolicyNet(nn.Module):
         cat2 = Categorical(logits=logits[:, 1])
         log_prob1 = cat1.log_prob(actions[:, 0])
         log_prob2 = cat2.log_prob(actions[:, 1])
-        log_prob = torch.stack([log_prob1, log_prob2], -1).sum(-1) # product of independent actions
+        log_prob = torch.stack([log_prob1, log_prob2], -1).sum(-1)  # product of independent actions
 
         # Compute entropy for both action distributions
         entropy1 = cat1.entropy()
         entropy2 = cat2.entropy()
-        entropy = torch.stack([entropy1, entropy2], -1).mean(-1)  # (B,) average entropy per sample
+        # entropy approximated as if action1 and action2 are independent
+        entropy = torch.stack([entropy1, entropy2], -1).sum(-1)
 
         return log_prob, entropy, value
 
