@@ -83,7 +83,7 @@ class PolicyNet(nn.Module):
         )
 
         # Mask logits with -inf where actions are illegal
-        logits = self._apply_masks(policy_logits.clone(), action_mask)
+        logits = self._apply_masks(policy_logits, action_mask)
 
         # Sample actions for first Pokemon using masked logits distribution
         cat1 = Categorical(logits=logits[:, 0])
@@ -98,7 +98,7 @@ class PolicyNet(nn.Module):
 
         return (
             logits,
-            torch.stack([log_prob1, log_prob2], -1),
+            log_prob1 + log_prob2,  # log prob of choosing this action pair
             torch.stack([action1, action2], -1),
             value,
         )
@@ -109,11 +109,15 @@ class PolicyNet(nn.Module):
         x = self.shared_backbone(obs.view(obs.size(0), -1).to(self.device))
         return self.aux_value_head(x).squeeze(-1)
 
-    def get_policy_probs(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
+    def get_policy_log_probs(
+        self, obs: torch.Tensor, action_taken: torch.Tensor, action_mask: torch.Tensor | None
+    ):
+        # returns policy probs in log space assuming the given action
+        # returns log probs for the joint distribution
         policy_logits, _, _, _ = self(obs, action_mask, sample_actions=False)
 
         if action_mask is None:
-            return torch.softmax(policy_logits, dim=-1)
+            return policy_logits.log_softmax(dim=-1)
 
         B = obs.shape[0] if obs.dim() == 3 else 1
         action_mask = (
@@ -121,8 +125,9 @@ class PolicyNet(nn.Module):
             if action_mask.dim() == 2
             else action_mask.to(self.device)
         )
-        logits = self._apply_masks(policy_logits, action_mask)
-        return torch.softmax(logits, dim=-1)
+        logits = self._apply_masks(policy_logits, action_mask)  # (B, 2, A)
+        logits = self._apply_sequential_masks(logits, action_taken[:, 0], action_mask)
+        return logits.log_softmax(dim=-1)
 
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
@@ -150,13 +155,13 @@ class PolicyNet(nn.Module):
         cat2 = Categorical(logits=logits[:, 1])
         log_prob1 = cat1.log_prob(actions[:, 0])
         log_prob2 = cat2.log_prob(actions[:, 1])
-        log_prob = torch.stack([log_prob1, log_prob2], -1).sum(-1)  # product of independent actions
+        log_prob = log_prob1 + log_prob2
 
         # Compute entropy for both action distributions
         entropy1 = cat1.entropy()
         entropy2 = cat2.entropy()
         # entropy approximated as if action1 and action2 are independent
-        entropy = torch.stack([entropy1, entropy2], -1).sum(-1)
+        entropy = entropy1 + entropy2
 
         return log_prob, entropy, value
 
@@ -188,5 +193,5 @@ class PolicyNet(nn.Module):
         no_valid = mask2.sum(-1) == 0
         mask2[no_valid, 0] = 1
 
-        logits[:, 1].masked_fill_(mask2 == 0, float("-inf"))
+        logits[:, 1].masked_fill_(mask2 == 0, float("-inf"))  # inplace modification
         return logits

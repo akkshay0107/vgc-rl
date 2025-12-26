@@ -12,9 +12,9 @@ from policy import PolicyNet
 
 # PPG Hyperparameters
 num_episodes = 100  # num of times entire loop (PPO + Aux phase) takes place
-gamma = 0.99
+gamma = 0.95  # avg vgc game length = 8 turns (0.95)^8 ~ 0.66
 gae_lambda = 0.95
-lr = 5e-4
+lr = 1e-4
 n_policy_iterations = 32  # Number of PPO iters before the Aux phase
 n_aux_epochs = 6  # Number of minibatches sampled in the Aux phase
 ppo_epochs = 1  # Number of minibatches sampled per PPO iter
@@ -153,7 +153,7 @@ def policy_phase():
     flat_adv = advantages.view(-1)
     flat_ret = returns.view(-1)
     with torch.no_grad():
-        policy_probs = policy.get_policy_probs(flat_obs, flat_masks)
+        policy_log_probs = policy.get_policy_log_probs(flat_obs, flat_act, flat_masks)
 
     # Filling out replay buffer
     sz = flat_obs.shape[0]
@@ -161,9 +161,10 @@ def policy_phase():
         replay_buffer.append(
             {
                 "obs": flat_obs[t],
+                "action": flat_act[t],
                 "action_mask": flat_masks[t],
                 "returns": flat_ret[t],
-                "old_policy_probs": policy_probs[t].detach(),
+                "old_policy_log_probs": policy_log_probs[t].detach(),
             }
         )
 
@@ -201,6 +202,7 @@ def policy_phase():
 
     return rewards_list.sum().item()
 
+
 def auxiliary_phase():
     if len(replay_buffer) < batch_size:
         return
@@ -210,23 +212,32 @@ def auxiliary_phase():
         batch = [replay_buffer[i] for i in indices]
 
         obs_batch = torch.stack([b["obs"] for b in batch])
+        act_batch = torch.stack([b["action"] for b in batch])
         mask_batch = torch.stack([b["action_mask"] for b in batch])
         returns_batch = torch.stack([b["returns"] for b in batch])
-        old_policy_probs_batch = torch.stack([b["old_policy_probs"] for b in batch])
+        old_policy_log_probs_batch = torch.stack([b["old_policy_log_probs"] for b in batch])
 
         # Auxiliary value loss (aux head)
         aux_values = policy.get_aux_value(obs_batch)
         aux_value_loss = F.mse_loss(aux_values.squeeze(-1), returns_batch)
 
-        # KL divergence loss KL(new || old)
-        current_policy_probs = policy.get_policy_probs(obs_batch, mask_batch)
-        kl_loss = F.kl_div(
-            torch.log(old_policy_probs_batch + 1e-8),  # log(old) (y_pred)
-            current_policy_probs,  # new (y_true)
+        # KL divergence loss KL(old || new)
+        current_policy_log_probs = policy.get_policy_log_probs(obs_batch, act_batch, mask_batch)
+        kl1 = F.kl_div(
+            current_policy_log_probs[:, 0],  # log(new) (y_pred)
+            old_policy_log_probs_batch[:, 0],  # old (y_true)
             reduction="batchmean",
+            log_target=True,
         )
 
-        joint_loss = aux_value_loss + beta_clone * kl_loss
+        kl2 = F.kl_div(
+            current_policy_log_probs[:, 1],  # log(new) (y_pred)
+            old_policy_log_probs_batch[:, 1],  # old (y_true)
+            reduction="batchmean",
+            log_target=True,
+        )
+
+        joint_loss = aux_value_loss + beta_clone * (kl1 + kl2)
 
         optimizer.zero_grad()
         joint_loss.backward()
@@ -255,15 +266,14 @@ def main():
         # Auxiliary phase
         auxiliary_phase()
 
-        if episode % 10 == 0:
-            print(
-                f"Episode {episode}/{num_episodes}, reward: {avg_rew:.3f}, buffer: {len(replay_buffer)}"
-            )
+        print(
+            f"Episode {episode + 1}/{num_episodes}, reward: {avg_rew:.3f}, buffer: {len(replay_buffer)}"
+        )
 
-        if episode % 50 == 0:
-            save_checkpoint(f"./checkpoints/checkpoint_{episode}.pt", episode)
+        if (episode + 1) % 10 == 0:
+            save_checkpoint(f"./checkpoints/checkpoint_{episode + 1}.pt", episode)
             save_checkpoint("./checkpoints/checkpoint_latest.pt", episode)
-            print(f"Checkpoint saved at episode {episode}")
+            print(f"Checkpoint saved at episode {episode + 1}")
 
 
 if __name__ == "__main__":
