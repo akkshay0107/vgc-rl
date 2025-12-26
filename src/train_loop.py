@@ -47,7 +47,7 @@ def save_checkpoint(path, episode):
 def load_checkpoint(path):
     if not os.path.exists(path):
         return None
-    checkpoint = torch.load(path)
+    checkpoint = torch.load(path, map_location=policy.device)
     policy.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     return checkpoint.get("episode", None)
@@ -80,8 +80,10 @@ def collect_rollout():
         action_mask_agent1 = Encoder.get_action_mask(env.battle1)  # type: ignore
         action_mask_agent2 = Encoder.get_action_mask(env.battle2)  # type: ignore
 
-        obs_batch = torch.stack([obs_agent1, obs_agent2], dim=0)  # (2, ...)
-        action_mask_batch = torch.stack([action_mask_agent1, action_mask_agent2], dim=0)
+        obs_batch = torch.stack([obs_agent1, obs_agent2], dim=0).to(policy.device)  # (2, ...)
+        action_mask_batch = torch.stack([action_mask_agent1, action_mask_agent2], dim=0).to(
+            policy.device
+        )
 
         with torch.no_grad():
             logits, log_probs, sampled_actions, values = policy(obs_batch, action_mask_batch)
@@ -109,8 +111,11 @@ def collect_rollout():
                 "rewards": torch.tensor(
                     [rewards[env.agent1.username], rewards[env.agent2.username]],
                     dtype=torch.float32,
+                    device=policy.device,
                 ),  # (2,)
-                "dones": torch.tensor([done1, done2], dtype=torch.float32),  # (2,)
+                "dones": torch.tensor(
+                    [done1, done2], dtype=torch.float32, device=policy.device
+                ),  # (2,)
                 "action_masks": action_mask_batch,
             }
         )
@@ -129,8 +134,8 @@ def policy_phase():
     def flat_collect(by):
         res = torch.stack([d[by] for d in episode_data])
         if len(res.shape) <= 2:
-            return res.view(-1)
-        return res.view(-1, *res.shape[2:])
+            return res.reshape(-1)
+        return res.reshape(-1, *res.shape[2:])
 
     # all below of shape (turns, 2, *)
     values_list = torch.stack([d["values"] for d in episode_data])
@@ -150,27 +155,13 @@ def policy_phase():
     flat_act = flat_collect("actions")
     flat_masks = flat_collect("action_masks")
     flat_old_log_prob = flat_collect("log_probs")
-    flat_adv = advantages.view(-1)
-    flat_ret = returns.view(-1)
-    with torch.no_grad():
-        policy_log_probs = policy.get_policy_log_probs(flat_obs, flat_act, flat_masks)
-
-    # Filling out replay buffer
-    sz = flat_obs.shape[0]
-    for t in range(sz):
-        replay_buffer.append(
-            {
-                "obs": flat_obs[t],
-                "action": flat_act[t],
-                "action_mask": flat_masks[t],
-                "returns": flat_ret[t],
-                "old_policy_log_probs": policy_log_probs[t].detach(),
-            }
-        )
+    flat_adv = advantages.reshape(-1)
+    flat_ret = returns.reshape(-1)
 
     # Sample minibatches and train on minibatch
+    sz = flat_obs.shape[0]
     for _ in range(ppo_epochs):
-        indices = torch.randperm(sz)
+        indices = torch.randperm(sz, device=policy.device)
         for start in range(0, sz, batch_size):
             minibatch = indices[start : start + batch_size]
             mb_obs = flat_obs[minibatch]
@@ -195,10 +186,31 @@ def policy_phase():
                 policy_loss + value_coef * value_loss - entropy_coef * entropy.mean()
             )  # -ve for entropy since we want to maximize entropy term
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             joint_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
             optimizer.step()
+
+    # Filling out replay buffer
+    with torch.no_grad():
+        policy_logits = policy.get_policy_masked_logits(flat_obs, flat_act, flat_masks)
+
+    obs_cpu = flat_obs.detach().cpu()
+    act_cpu = flat_act.detach().cpu()
+    mask_cpu = flat_masks.detach().cpu()
+    ret_cpu = flat_ret.detach().cpu()
+    logits_cpu = policy_logits.detach().to(torch.float16).cpu()
+
+    for t in range(sz):
+        replay_buffer.append(
+            {
+                "obs": obs_cpu[t],
+                "action": act_cpu[t],
+                "action_mask": mask_cpu[t],
+                "returns": ret_cpu[t],
+                "old_policy_logits": logits_cpu[t],
+            }
+        )
 
     return rewards_list.sum().item()
 
@@ -211,35 +223,31 @@ def auxiliary_phase():
         indices = np.random.choice(len(replay_buffer), batch_size, replace=False)
         batch = [replay_buffer[i] for i in indices]
 
-        obs_batch = torch.stack([b["obs"] for b in batch])
-        act_batch = torch.stack([b["action"] for b in batch])
-        mask_batch = torch.stack([b["action_mask"] for b in batch])
-        returns_batch = torch.stack([b["returns"] for b in batch])
-        old_policy_log_probs_batch = torch.stack([b["old_policy_log_probs"] for b in batch])
+        obs_batch = torch.stack([b["obs"] for b in batch]).to(policy.device)
+        act_batch = torch.stack([b["action"] for b in batch]).to(policy.device)
+        mask_batch = torch.stack([b["action_mask"] for b in batch]).to(policy.device)
+        returns_batch = torch.stack([b["returns"] for b in batch]).to(policy.device)
+        old_logits_batch = torch.stack([b["old_policy_logits"] for b in batch]).to(policy.device)
 
         # Auxiliary value loss (aux head)
         aux_values = policy.get_aux_value(obs_batch)
         aux_value_loss = F.mse_loss(aux_values.squeeze(-1), returns_batch)
 
         # KL divergence loss KL(old || new)
-        current_policy_log_probs = policy.get_policy_log_probs(obs_batch, act_batch, mask_batch)
-        kl1 = F.kl_div(
-            current_policy_log_probs[:, 0],  # log(new) (y_pred)
-            old_policy_log_probs_batch[:, 0],  # old (y_true)
+        current_logits = policy.get_policy_masked_logits(obs_batch, act_batch, mask_batch)
+        old_logp = old_logits_batch.to(torch.float32).log_softmax(dim=-1)
+        new_logp = current_logits.to(torch.float32).log_softmax(dim=-1)
+
+        kl_loss = F.kl_div(
+            new_logp.reshape(-1, ACT_SIZE),  # y_pred
+            old_logp.reshape(-1, ACT_SIZE),  # y_true
             reduction="batchmean",
             log_target=True,
         )
 
-        kl2 = F.kl_div(
-            current_policy_log_probs[:, 1],  # log(new) (y_pred)
-            old_policy_log_probs_batch[:, 1],  # old (y_true)
-            reduction="batchmean",
-            log_target=True,
-        )
+        joint_loss = aux_value_loss + beta_clone * kl_loss
 
-        joint_loss = aux_value_loss + beta_clone * (kl1 + kl2)
-
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         joint_loss.backward()
         torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
         optimizer.step()
@@ -248,7 +256,7 @@ def auxiliary_phase():
         _, _, _, values = policy(obs_batch, mask_batch, sample_actions=False)
         value_loss = F.mse_loss(values.squeeze(-1), returns_batch)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         value_loss.backward()
         torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
         optimizer.step()
