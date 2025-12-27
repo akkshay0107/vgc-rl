@@ -48,8 +48,9 @@ async def main():
         path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
     ]
     team = RandomTeamFromPool(team_files)
+    fmt = "gen9vgc2025regh"
 
-    checkpoint_path = "./checkpoints/checkpoint_1210.pt"
+    checkpoint_path = "PUT CHECKPOINT PATH HERE"
     checkpoint = torch.load(checkpoint_path)
 
     policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
@@ -58,7 +59,7 @@ async def main():
     rl_player = RLPlayer(
         policy=policy,
         account_configuration=AccountConfiguration("RLPlayer", None),
-        battle_format="gen9vgc2025regh",
+        battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
         max_concurrent_battles=10,
         team=team,
@@ -68,7 +69,7 @@ async def main():
     # Create opponents
     random_player = RandomPlayer(
         account_configuration=AccountConfiguration("RandomPlayer", None),
-        battle_format="gen9vgc2025regh",
+        battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
         max_concurrent_battles=10,
         team=team,
@@ -77,7 +78,7 @@ async def main():
 
     max_power_player = MaxBasePowerPlayer(
         account_configuration=AccountConfiguration("MaxPowerPlayer", None),
-        battle_format="gen9vgc2025regh",
+        battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
         max_concurrent_battles=10,
         team=team,
