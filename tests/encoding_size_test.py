@@ -27,9 +27,9 @@ if __name__ == "__main__":
     teambuilder_mon = TeambuilderPokemon.from_showdown(pokepaste_string)
     pokemon = Pokemon(gen=9, teambuilder=teambuilder_mon)
 
-    pokemon_str = Encoder._get_pokemon_as_text(pokemon, status=2)
-    print(len(pokemon_str))
-    tokens = Encoder.tokenizer.encode(pokemon_str, add_special_tokens=True)
-    print(len(tokens))
+    pokemon_str = Encoder._get_pokemon_as_text(pokemon, cond=2)
+    print(len(pokemon_str[0]), len(pokemon_str[1]))
+    tokens = tuple(Encoder.tokenizer.encode(s, add_special_tokens=True) for s in pokemon_str)
+    print(len(tokens[0]), len(tokens[1]))
     print("-" * 100)
     print(pokemon_str)

@@ -60,7 +60,11 @@ class CLSReducer(nn.Module):
         init.normal_(self.pos_emb, std=self.emb_std)
         init.normal_(self.type_emb.weight, std=self.emb_std)
 
-        # TODO: initialise encoder layers
+        for p in self.encoder.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)  # all other parameters
+            else:
+                nn.init.zeros_(p)  # set biases to zero
 
     def forward(
         self, obs: torch.Tensor, key_padding_mask: torch.Tensor | None = None

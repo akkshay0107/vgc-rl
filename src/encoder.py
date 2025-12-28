@@ -9,9 +9,19 @@ from poke_env.battle.side_condition import SideCondition
 from poke_env.battle.weather import Weather
 from transformers import BertModel, BertTokenizer
 
-from lookups import ITEM_DESCRIPTION, MOVES, POKEMON, POKEMON_DESCRIPTION
+from lookups import (
+    EFFECT_DESCRIPTION,
+    ITEM_DESCRIPTION,
+    MOVES,
+    POKEMON,
+    POKEMON_DESCRIPTION,
+    STATUS_DESCRIPTION,
+)
 
-OBS_DIM = (13, 650)  # 624 from TinyBERT and 26 for additional information
+TINYBERT_SZ = 624
+EXTRA_SZ = 28
+OBS_DIM = (13, 2 * TINYBERT_SZ + EXTRA_SZ)
+
 # Define action space parameters (from gen9vgcenv.py)
 NUM_SWITCHES = 6
 NUM_MOVES = 4
@@ -31,49 +41,67 @@ class Encoder:
     model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 
     @staticmethod
-    def _get_pokemon_as_text(pokemon: Pokemon, status: int) -> str:
-        # building the text description for each pokemon.
-        if status == -1:
-            status_str = "This Pokemon is DROPPED. It is not part of the battle."
-        elif status == 0:
-            status_str = "This pokemon MAY or MAY NOT be in the back as a switch."
-        elif status == 1:
-            status_str = "This pokemon IS ACTIVE. It is currently on the field."
-        elif status == 2:
-            status_str = "This pokemon is IN THE BACK. It is able to switch in."
-        elif status == 3:
-            status_str = "This pokemon has FAINTED. It no longer participates in the battle."
-        elif status == 4:
-            status_str = "This pokemon CANNOT BE SWITCHED IN. May or may not be in team."
+    def _get_pokemon_as_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
+        # information about pokemon position
+        if cond == -1:
+            cond_str = "This Pokemon is DROPPED. It is not part of the battle."
+        elif cond == 0:
+            cond_str = "This pokemon MAY or MAY NOT be in the back as a switch."
+        elif cond == 1:
+            cond_str = "This pokemon IS ACTIVE. It is currently on the field."
+        elif cond == 2:
+            cond_str = "This pokemon is IN THE BACK. It is able to switch in."
+        elif cond == 3:
+            cond_str = "This pokemon has FAINTED. It no longer participates in the battle."
+        elif cond == 4:
+            cond_str = "This pokemon CANNOT BE SWITCHED IN. May or may not be in team."
         else:
-            status_str = "Unknown status."
+            cond_str = "We do not know about this pokemon."
 
         movelist = list(pokemon.moves.keys())
-        if not movelist:
-            return status_str + " Moves are unknown."
+        if movelist is None:
+            pass
 
         joint_movelist = ",".join(movelist)
         id = POKEMON[joint_movelist]
 
-        desc = POKEMON_DESCRIPTION[id]
+        pokemon_desc = POKEMON_DESCRIPTION[id]
 
-        if pokemon.item is None:
-            item_desc = "Holds no item."
-        else:
-            item_desc = ITEM_DESCRIPTION[id]
+        def get_move_desc(move: str, desc) -> str:
+            return move + ":" + json.dumps(desc, separators=(",", ":"))
 
-        get_move_desc = lambda move, desc: move + ":" + json.dumps(desc, separators=(",", ":"))  # noqa: E731
+        moves_desc = " ".join([get_move_desc(move, MOVES[move]) for move in movelist])
 
-        moves_desc = [get_move_desc(move, MOVES[move]) for move in movelist]
+        item_desc = "Holds no item." if pokemon.item is None else ITEM_DESCRIPTION[pokemon.item]
 
-        return status_str + desc + item_desc + "Has the following moves: " + ". ".join(moves_desc)
+        status_desc = (
+            "No status condition." if pokemon.status is None else STATUS_DESCRIPTION[pokemon.status]
+        )
+
+        def describe_effect(effect: Effect, turns: int) -> str:
+            return f"{EFFECT_DESCRIPTION[effect]}. Has been active for {turns} turns."
+
+        effect_desc = " ".join(
+            [describe_effect(effect, turn) for effect, turn in pokemon.effects.items()]
+        )
+
+        first_turn_in = (
+            "Can use first turn only moves."
+            if pokemon.first_turn
+            else "Cannot use first turn only moves."
+        )
+
+        first_half = cond_str + pokemon_desc + moves_desc
+        second_half = item_desc + status_desc + effect_desc + first_turn_in
+
+        return first_half, second_half
 
     @staticmethod
     def _encode_pokemon(
-        pokemon: Pokemon, battle: DoubleBattle, status: int
-    ) -> tuple[str, list[float]]:
+        pokemon: Pokemon, battle: DoubleBattle, cond: int
+    ) -> tuple[tuple[str, str], list[float]]:
         """
-        status indicates whether we know if pokemon is active, benched, dropped, fainted or unknown
+        cond indicates whether we know if pokemon is active, benched, dropped, fainted or unknown
         -1 = dropped
         0 = unknown
         1 = active
@@ -82,42 +110,44 @@ class Encoder:
         4 = stuck out (dropped from own team / pokemon inside is trapped)
         """
         # Text input for each pokemon
-        pokemon_str = Encoder._get_pokemon_as_text(pokemon, status)
+        pokemon_str = Encoder._get_pokemon_as_text(pokemon, cond)
 
-        # Array inputs for each pokemon (roughly normalize to [0,1])
+        # Extra inputs for each pokemon (roughly normalized to [0,1])
         pokemon_row = [0.0] * 26
-        pokemon_row[0] = pokemon.type_1.value / 18
-        pokemon_row[1] = 0 if pokemon.type_2 is None else pokemon.type_2.value / 18
+        pokemon_row[0] = pokemon.type_1.value / 18.0
+        pokemon_row[1] = 0.0 if pokemon.type_2 is None else pokemon.type_2.value / 18.0
+        pokemon_row[2] = 0.0 if not pokemon.is_terastallized else pokemon.tera_type.value / 18.0  # type: ignore
 
-        pokemon_row[2] = 0 if not pokemon.is_terastallized else pokemon.tera_type.value / 18  # type: ignore
-        pokemon_row[3] = 1 if pokemon.item else 0
-
-        curr_effects = pokemon.effects
-        pokemon_row[4] = curr_effects.get(Effect.TAUNT, 0) / 3
-        pokemon_row[5] = curr_effects.get(Effect.ENCORE, 0) / 3
-        pokemon_row[6] = 1 if Effect.CONFUSION in curr_effects else 0
-
-        pokemon_row[7] = pokemon.current_hp_fraction if pokemon.current_hp is not None else 0
+        pokemon_row[3] = pokemon.current_hp_fraction if pokemon.current_hp is not None else 0.0
 
         stats = ["hp", "atk", "def", "spa", "spd", "spe"]
         for i, stat in enumerate(stats):
-            pokemon_row[8 + i] = pokemon.base_stats[stat] / 200
+            pokemon_row[4 + i] = pokemon.base_stats[stat] / 200.0
 
         boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
         for i, boost in enumerate(boosts):
-            pokemon_row[14 + i] = pokemon.boosts[boost] / 6
+            pokemon_row[10 + i] = pokemon.boosts[boost] / 6.0
 
         for i, move in enumerate(pokemon.moves):
-            pokemon_row[21 + i] = pokemon.moves[move].current_pp / pokemon.moves[move].max_pp
+            pokemon_row[17 + i] = pokemon.moves[move].current_pp / pokemon.moves[move].max_pp
 
-        pokemon_row[25] = pokemon.protect_counter / 3
+        pokemon_row[21] = pokemon.protect_counter / 3.0
+
+        pokemon_row[22] = float(pokemon.first_turn)
+        curr_effects = pokemon.effects
+        pokemon_row[23] = curr_effects.get(Effect.TAUNT, 0) / 3.0
+        pokemon_row[24] = curr_effects.get(Effect.ENCORE, 0) / 3.0
+        pokemon_row[25] = 1.0 if Effect.CONFUSION in curr_effects else 0.0
+        pokemon_row[26] = curr_effects.get(Effect.YAWN, 0)
+
+        pokemon_row[27] = pokemon.weight / 300.0  # heaviest pokemon is ursa bm at 330
 
         return pokemon_str, pokemon_row
 
     @staticmethod
     def _get_description(
         battle: DoubleBattle,
-    ) -> tuple[list[str], list[float], list[str], list[float]]:
+    ) -> tuple[list[tuple[str, str]], list[float], list[tuple[str, str]], list[float]]:
         p1_mon_txt = []
         p1_mon_arr = []
         possible_switches = set()
@@ -127,14 +157,14 @@ class Encoder:
 
         for mon in battle.team.values():
             if mon.fainted:
-                status = 3
+                cond = 3
             elif mon in battle.active_pokemon:
-                status = 1
+                cond = 1
             elif mon in possible_switches:
-                status = 2
+                cond = 2
             else:
-                status = 4
-            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
+                cond = 4
+            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, cond)
             p1_mon_txt.append(mon_txt)
             p1_mon_arr.append(mon_arr)
 
@@ -144,16 +174,16 @@ class Encoder:
 
         for mon in battle.opponent_team.values():
             if mon.fainted:
-                status = 3
+                cond = 3
             elif mon in battle.opponent_active_pokemon:
-                status = 1
+                cond = 1
             elif mon.revealed:
-                status = 2
+                cond = 2
             elif len(revealed) == 4:
-                status = -1
+                cond = -1
             else:
-                status = 0
-            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, status)
+                cond = 0
+            mon_txt, mon_arr = Encoder._encode_pokemon(mon, battle, cond)
             p2_mon_txt.append(mon_txt)
             p2_mon_arr.append(mon_arr)
 
@@ -280,9 +310,6 @@ class Encoder:
         if battle.teampreview:
             return torch.rand(OBS_DIM, dtype=torch.float32)
 
-        p1_txt, p1_arr, opp_txt, opp_arr = Encoder._get_description(battle)
-        field_conditions = Encoder._get_locals_as_text(battle)
-
         # concatenate the output from the CLS token and the mean of all tokens in the sequence
         def get_cls_mean_concat(text: str, max_len: int = 512) -> torch.Tensor:
             encoded = Encoder.tokenizer(
@@ -301,10 +328,13 @@ class Encoder:
             concat_emb = torch.cat([cls_emb, mean_emb], dim=-1)  # (1, 624)
             return concat_emb
 
+        p1_txt, p1_arr, opp_txt, opp_arr = Encoder._get_description(battle)
+        field_conditions = Encoder._get_locals_as_text(battle)
+
         # combine the stuff above into one observation
         # row 0: pad p1 and opp locals into a string and pass it through encoder (1, 624)
-        # row 1-6: pokemons for p1 (6, 650)
-        # rows 7-12: pokemons for p2 (6, 650)
+        # row 1-6: pokemons for p1 (6, 1270)
+        # rows 7-12: pokemons for p2 (6, 1270)
 
         all_embeddings = []
 
@@ -312,28 +342,30 @@ class Encoder:
         all_embeddings.append(
             torch.cat(
                 [
-                    field_emb,  # (1, 624)
+                    field_emb,
                     torch.zeros(
-                        (1, 26),
+                        (1, OBS_DIM[1] - field_emb.shape[1]),
                         dtype=field_emb.dtype,
                         device=field_emb.device,
                     ),
                 ],
                 dim=-1,
-            )  # (1, 650)
+            )
         )
 
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
-            emb = get_cls_mean_concat(mon_txt)
-            extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
-            all_embeddings.append(torch.cat([emb, extra], dim=1))
+            emb1 = get_cls_mean_concat(mon_txt[0])
+            emb2 = get_cls_mean_concat(mon_txt[1])
+            extra = torch.Tensor(mon_arr, device=emb1.device).unsqueeze(0)
+            all_embeddings.append(torch.cat([emb1, emb2, extra], dim=1))
 
         for mon_txt, mon_arr in zip(opp_txt, opp_arr):
-            emb = get_cls_mean_concat(mon_txt)
-            extra = torch.Tensor(mon_arr, device=emb.device).unsqueeze(0)
-            all_embeddings.append(torch.cat([emb, extra], dim=1))
+            emb1 = get_cls_mean_concat(mon_txt[0])
+            emb2 = get_cls_mean_concat(mon_txt[1])
+            extra = torch.Tensor(mon_arr, device=emb1.device).unsqueeze(0)
+            all_embeddings.append(torch.cat([emb1, emb2, extra], dim=1))
 
-        return torch.cat(all_embeddings, dim=0)  # should be (13, 650)
+        return torch.cat(all_embeddings, dim=0)  # should be (13, 1270)
 
     @staticmethod
     def get_action_mask(battle: AbstractBattle):

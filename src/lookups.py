@@ -1,3 +1,6 @@
+from poke_env.battle.effect import Effect
+from poke_env.battle.status import Status
+
 POKEMON = {
     "liquidation,lastrespects,aquajet,protect": 1,
     "superfang,feint,followme,protect": 2,
@@ -77,43 +80,45 @@ POKEMON_DESCRIPTION = {
 }
 
 ITEM_DESCRIPTION = {
-    1: "Holds Focus Sash. If the holder has full HP, it survives a hit that would otherwise KO it with 1 HP. Single use. This is useful for frail pokemon like Basculegion to guarantee they can get off at least one move.",
-    2: "Holds Rocky Helmet. If the holder is hit by a contact move, the attacker loses 1/6 of its maximum HP. This is useful for bulky pokemon like Maushold-Four to punish physical attackers.",
-    3: "Holds Loaded Dice. The holder's multi-hit moves are more likely to hit more times. This is useful for Dragonite with Scale Shot to maximize its damage output.",
-    4: "Holds Safety Goggles. The holder is immune to powder moves and damage from Sandstorm or Hail. This is useful for Incineroar to avoid moves like Spore or Sleep Powder.",
-    5: "Holds Assault Vest. The holder's Special Defense is 1.5x, but it can only select damaging moves. This is useful for Ursaluna-Bloodmoon to become a powerful special wall that can still deal damage.",
-    6: "Holds Choice Specs. The holder's Special Attack is 1.5x, but it can only select the first move it executes. This is useful for Gholdengo to act as a strong special wallbreaker.",
-    7: "Holds Covert Cloak. The holder is immune to the additional effects of other Pokémon's moves. This is useful for Hatterene to avoid flinching or stat drops.",
-    8: "Holds Psychic Seed. If the terrain is Psychic Terrain, consumes the seed to raise the holder's Special Defense by 1 stage. This is useful for Indeedee-F when paired with a Psychic Terrain setter.",
-    9: "Holds Choice Specs. The holder's Special Attack is 1.5x, but it can only select the first move it executes. This is useful for Torkoal to act as a strong special wallbreaker, especially with Eruption in sun.",
-    10: "Holds Flame Orb. At the end of each turn, this item attempts to burn the holder. This is useful for Ursaluna with the Guts ability, which boosts its Attack when it has a status condition.",
-    11: "Holds Clear Amulet. Prevents other Pokémon from lowering the holder's stats. This is useful for Gallade to avoid being weakened by moves like Intimidate.",
-    12: "Holds Wide Lens. The accuracy of the holder's moves is 1.1x. This is useful for Maushold with Population Bomb to increase its consistency.",
-    13: "Holds Loaded Dice. The holder's multi-hit moves are more likely to hit more times. This is useful for Dragonite with Scale Shot to maximize its damage output.",
-    14: "Holds Life Orb. The holder's attacks do 1.3x damage, but it loses 1/10 of its max HP after each attack. This is useful for Gholdengo to get a significant boost in damage output.",
-    15: "Holds Assault Vest. The holder's Special Defense is 1.5x, but it can only select damaging moves. This is useful for Ursaluna-Bloodmoon to become a powerful special wall that can still deal damage.",
-    16: "Holds Sitrus Berry. Restores 1/4 of the holder's max HP when its HP is below 1/2. Single use. This is useful for Annihilape to increase its survivability.",
-    17: "Holds Focus Sash. If the holder has full HP, it survives a hit that would otherwise KO it with 1 HP. Single use. This is useful for frail pokemon like Maushold-Four to guarantee they can get off at least one move.",
-    18: "Holds Miracle Seed. The holder's Grass-type moves have 1.2x power. This is useful for Rillaboom to boost the power of its STAB moves.",
-    19: "Holds Focus Sash. If the holder has full HP, it survives a hit that would otherwise KO it with 1 HP. Single use. This is useful for frail pokemon like Whimsicott to guarantee they can get off at least one move.",
-    20: "Holds Choice Specs. The holder's Special Attack is 1.5x, but it can only select the first move it executes. This is useful for Gholdengo to act as a strong special wallbreaker.",
-    21: "Holds Choice Scarf. The holder's Speed is 1.5x, but it can only select the first move it executes. This is useful for Pelipper to outspeed and revenge kill faster threats.",
-    22: "Holds Miracle Seed. The holder's Grass-type moves have 1.2x power. This is useful for Rillaboom to boost the power of its STAB moves.",
-    23: "Holds Loaded Dice. The holder's multi-hit moves are more likely to hit more times. This is useful for Dragonite with Scale Shot to maximize its damage output.",
-    24: "Holds Power Herb. The holder's two-turn moves complete in one turn. Single use. This is useful for Archaludon to use Electro Shot immediately.",
-    25: "Holds Grassy Seed. If the terrain is Grassy Terrain, consumes the seed to raise the holder's Defense by 1 stage. This is useful for Gholdengo when paired with a Grassy Terrain setter.",
-    26: "Holds White Herb. If any of the holder's stats are lowered, consumes the herb to restore them to normal. Single use. This is useful for Sneasler to counteract the stat drops from Close Combat.",
-    27: "Holds Assault Vest. The holder's Special Defense is 1.5x, but it can only select damaging moves. This is useful for Rillaboom to become a powerful special wall that can still deal damage.",
-    28: "Holds Loaded Dice. The holder's multi-hit moves are more likely to hit more times. This is useful for Dragonite with Scale Shot to maximize its damage output.",
-    29: "Holds Focus Sash. If the holder has full HP, it survives a hit that would otherwise KO it with 1 HP. Single use. This is useful for frail pokemon like Ninetales-Alola to guarantee they can set up Aurora Veil.",
-    30: "Holds Clear Amulet. Prevents other Pokémon from lowering the holder's stats. This is useful for Arcanine-Hisui to avoid being weakened by moves like Intimidate.",
-    31: "Holds Black Glasses. The holder's Dark-type moves have 1.2x power. This is useful for Kingambit to boost the power of its STAB moves.",
-    32: "Holds Assault Vest. The holder's Special Defense is 1.5x, but it can only select damaging moves. This is useful for Rillaboom to become a powerful special wall that can still deal damage.",
-    33: "Holds Safety Goggles. The holder is immune to powder moves and damage from Sandstorm or Hail. This is useful for Clefable to avoid moves like Spore or Sleep Powder.",
-    34: "Holds Leftovers. At the end of each turn, the holder restores 1/16 of its maximum HP. This is useful for Volcarona to increase its longevity.",
-    35: "Holds Grassy Seed. If the terrain is Grassy Terrain, consumes the seed to raise the holder's Defense by 1 stage. This is useful for Sneasler when paired with a Grassy Terrain setter.",
-    36: "Holds Covert Cloak. The holder is immune to the additional effects of other Pokémon's moves. This is useful for Dondozo to avoid flinching or stat drops.",
+    "focussash": "Holds Focus Sash. If the holder has full HP, it survives a hit that would otherwise KO it with 1 HP. Single use. This is useful for frail pokemon to guarantee they can get off at least one move.",
+    "rockyhelmet": "Holds Rocky Helmet. If the holder is hit by a contact move, the attacker loses 1/6 of its maximum HP. This is useful to punish physical attackers.",
+    "loadeddice": "Holds Loaded Dice. The holder's multi-hit moves are more likely to hit more times. This is useful for Dragonite with Scale Shot to maximize its damage output.",
+    "safetygoggles": "Holds Safety Goggles. The holder is immune to powder moves and damage from Sandstorm or Hail. This is useful to avoid moves like Spore, Rage Powder or Sleep Powder.",
+    "assaultvest": "Holds Assault Vest. The holder's Special Defense is 1.5x, but it can only select damaging moves. This is useful to make Pokemon tank special attacks.",
+    "choicespecs": "Holds Choice Specs. The holder's Special Attack is 1.5x, but it can only select the first move it executes. This is useful to threaten immediate large damage.",
+    "covertcloak": "Holds Covert Cloak. The holder is immune to the additional effects of other Pokemon's moves. This is useful to avoid flinching from Fake out or stat drops.",
+    "psychicseed": "Holds Psychic Seed. If the terrain is Psychic Terrain, consumes the seed to raise the holder's Special Defense by 1 stage. This is useful when paired with a Psychic Terrain setter.",
+    "flameorb": "Holds Flame Orb. At the end of each turn, this item attempts to burn the holder. This is useful for Ursaluna with the Guts ability, which boosts its Attack when it has a status condition.",
+    "clearamulet": "Holds Clear Amulet. Prevents other Pokemon from lowering the holder's stats. This is useful to avoid being weakened by abilities like Intimidate.",
+    "widelens": "Holds Wide Lens. The accuracy of the holder's moves is 1.1x. This is useful to increase consistency of inaccurate moves.",
+    "lifeorb": "Holds Life Orb. The holder's attacks do 1.3x damage, but it loses 1/10 of its max HP after each attack. This is useful to get a significant boost in damage output.",
+    "sitrusberry": "Holds Sitrus Berry. Restores 1/4 of the holder's max HP when its HP is below 1/2. Single use. This is useful on bulky pokemon to increase survivability.",
+    "miracleseed": "Holds Miracle Seed. The holder's Grass-type moves have 1.2x power. This is useful for grass pokemon to boost the power of its STAB moves.",
+    "choicescarf": "Holds Choice Scarf. The holder's Speed is 1.5x, but it can only select the first move it executes. This is useful for Pelipper to outspeed and revenge kill faster threats.",
+    "powerherb": "Holds Power Herb. The holder's two-turn moves complete in one turn. Single use. This is useful for Archaludon to use Electro Shot immediately.",
+    "grassyseed": "Holds Grassy Seed. If the terrain is Grassy Terrain, consumes the seed to raise the holder's Defense by 1 stage. This is useful when paired with a Grassy Terrain setter.",
+    "whiteherb": "Holds White Herb. If any of the holder's stats are lowered, consumes the herb to restore them to normal. Single use. This is useful to counteract the stat drops from Close Combat and other moves.",
+    "blackglasses": "Holds Black Glasses. The holder's Dark-type moves have 1.2x power. This is useful for dark type pokemon to boost the power of its STAB moves.",
+    "leftovers": "Holds Leftovers. At the end of each turn, the holder restores 1/16 of its maximum HP. This is useful for bulky pokemon to increase its longevity.",
 }
+
+STATUS_DESCRIPTION = {
+    Status.BRN: "This pokemon is burned. Burn reduces the Pokemon's Attack stat by 50% and causes them to lose 6.25% of their maximum HP at the end of each turn. Fire-type Pokemon cannot be burned",
+    Status.FNT: "The Pokemon has 0 HP and cannot battle. Fainted Pokemon must be switched out and cannot use moves or take actions until revived.",
+    Status.FRZ: "This pokemon is frozen. Freeze causes the pokemon to not move. Has a 20% chance to thaw each turn, and will immediately thaw if hit by a Fire-type move. Ice-type Pokemon cannot be frozen.",
+    Status.PAR: "This pokemon is paralysed. Paralysis reduces the Pokemon's Speed stat by 50% and gives them a 25% chance to be fully paralyzed (unable to move) each turn. Electric-type Pokemon cannot be paralyzed.",
+    Status.PSN: "This pokemon is poisoned. Poison causes the Pokemon to lose 12.5% of their maximum HP at the end of each turn. Poison and Steel-type Pokemon cannot be poisoned.",
+    Status.SLP: "This pokemon is asleep. Sleep prevents the Pokemon from using moves for 1-3 turns (duration chosen randomly). The Pokemon will wake up automatically when the sleep duration ends or are cured by a move.",
+    Status.TOX: "This poison is badly poisoned. It causes the pokemon to take increasing damage each turn: 6.25% max HP on turn 1, then 12.5%, then 18.75%, and so on. The damage counter resets if the Pokemon switches out.",
+}
+
+EFFECT_DESCRIPTION = {
+    Effect.CONFUSION: "Pokemon is confused and has a 33% chance to hurt itself instead of using moves. Lasts 2-5 turns.",
+    Effect.TAUNT: "Pokemon has been taunted. It can only use damaging moves for 3 turns.",
+    Effect.ENCORE: "Pokemon is forced to repeat the last used move for 3 turns.",
+    Effect.YAWN: "Pokemon will fall asleep after 1 more turn unless switched out.",
+}
+
 
 MOVES = {
     "liquidation": {
