@@ -113,7 +113,7 @@ class Encoder:
         pokemon_str = Encoder._get_pokemon_as_text(pokemon, cond)
 
         # Extra inputs for each pokemon (roughly normalized to [0,1])
-        pokemon_row = [0.0] * 26
+        pokemon_row = [0.0] * EXTRA_SZ
         pokemon_row[0] = pokemon.type_1.value / 18.0
         pokemon_row[1] = 0.0 if pokemon.type_2 is None else pokemon.type_2.value / 18.0
         pokemon_row[2] = 0.0 if not pokemon.is_terastallized else pokemon.tera_type.value / 18.0  # type: ignore
@@ -344,7 +344,7 @@ class Encoder:
                 [
                     field_emb,
                     torch.zeros(
-                        (1, OBS_DIM[1] - field_emb.shape[1]),
+                        (1, OBS_DIM[-1] - field_emb.shape[1]),
                         dtype=field_emb.dtype,
                         device=field_emb.device,
                     ),
