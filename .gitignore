@@ -19,3 +19,6 @@ wheels/
 
 # Checkpoints
 checkpoints/*
+
+# Replays
+replays/*

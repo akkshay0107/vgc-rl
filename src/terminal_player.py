@@ -28,7 +28,7 @@ def print_valid_actions_from_mask(battle, action_mask):
 
     for pos in range(2):
         active = battle.active_pokemon[pos]
-        if active is None or active.fainted:
+        if active is None:
             continue
 
         mvs = (

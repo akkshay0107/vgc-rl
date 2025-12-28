@@ -3,19 +3,28 @@ import torch.nn as nn
 import torch.nn.init as init
 from torch.distributions import Categorical
 
+from cls_reducer import CLSReducer
 from encoder import ACT_SIZE, OBS_DIM
 
 
 # Needs all inputs to be on the same device as the model
 class PolicyNet(nn.Module):
-    def __init__(self, obs_dim=OBS_DIM, act_size=ACT_SIZE, net_arch=[256, 256, 128]):
+    def __init__(
+        self,
+        obs_dim=OBS_DIM,
+        act_size=ACT_SIZE,
+        d_model=256,
+        nhead=8,
+        nlayer=3,
+        net_arch=(256, 256, 128),
+    ):
         super().__init__()
         self.seq_len, self.feat_dim = obs_dim
         self.act_size = act_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        input_dim = self.seq_len * self.feat_dim
+        self.reducer = CLSReducer(self.seq_len, self.feat_dim, d_model, nhead, nlayer)
 
-        layers = [nn.Linear(input_dim, net_arch[0]), nn.ReLU()]
+        layers = [nn.Linear(d_model, net_arch[0]), nn.ReLU()]
         for h_in, h_out in zip(net_arch[:-1], net_arch[1:]):
             layers.extend([nn.Linear(h_in, h_out), nn.ReLU()])
         self.shared_backbone = nn.Sequential(*layers)
@@ -30,6 +39,7 @@ class PolicyNet(nn.Module):
         self.to(self.device)
         self._init_weights()
 
+    @torch.no_grad()
     def _init_weights(self):
         # orthogonal initialization of the network
         gain_hidden = init.calculate_gain("relu")
@@ -64,8 +74,8 @@ class PolicyNet(nn.Module):
         if S != self.seq_len or F != self.feat_dim:
             raise ValueError(f"Got shape ({S}, {F}). Expected({self.seq_len}, {self.feat_dim})")
 
-        # Flatten observation (B, S, F) -> (B, S*F)
-        x = self.shared_backbone(obs.reshape(B, -1))
+        z = self.reducer(obs)
+        x = self.shared_backbone(z)
 
         policy_logits = self.policy_head(x).reshape(B, 2, self.act_size)
         value = (
@@ -100,7 +110,8 @@ class PolicyNet(nn.Module):
     def get_aux_value(self, obs: torch.Tensor) -> torch.Tensor:
         if obs.dim() == 2:
             obs = obs.unsqueeze(0)
-        x = self.shared_backbone(obs.reshape(obs.size(0), -1))
+        z = self.reducer(obs)
+        x = self.shared_backbone(z)
         return self.aux_value_head(x).squeeze(-1)
 
     def get_policy_masked_logits(
@@ -174,3 +185,4 @@ class PolicyNet(nn.Module):
         mask2[no_valid, 0] = 1
 
         logits[:, 1].masked_fill_(mask2 == 0, float("-inf"))  # inplace modification
+        # If needed modify the above function to not modify inplace since it can mess with autograd
