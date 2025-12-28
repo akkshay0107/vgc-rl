@@ -20,7 +20,7 @@ from lookups import (
 
 TINYBERT_SZ = 624
 EXTRA_SZ = 28
-OBS_DIM = (13, 2 * TINYBERT_SZ + EXTRA_SZ)
+OBS_DIM = (37, TINYBERT_SZ)  # 1 field row + 3 tokens * 12 pokemon
 
 # Define action space parameters (from gen9vgcenv.py)
 NUM_SWITCHES = 6
@@ -30,6 +30,7 @@ NUM_GIMMICKS = 1
 ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
 
 
+# TODO: iron out device problems when using both cuda and cpu
 class Encoder:
     """
     Static library class containing methods to
@@ -339,31 +340,35 @@ class Encoder:
         all_embeddings = []
 
         field_emb = get_cls_mean_concat(field_conditions)
-        all_embeddings.append(
-            torch.cat(
-                [
-                    field_emb,
-                    torch.zeros(
-                        (1, OBS_DIM[-1] - field_emb.shape[1]),
-                        dtype=field_emb.dtype,
-                        device=field_emb.device,
-                    ),
-                ],
-                dim=-1,
-            )
-        )
+        all_embeddings.append(field_emb)
 
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
             emb1 = get_cls_mean_concat(mon_txt[0])
             emb2 = get_cls_mean_concat(mon_txt[1])
-            extra = torch.Tensor(mon_arr, device=emb1.device).unsqueeze(0)
-            all_embeddings.append(torch.cat([emb1, emb2, extra], dim=1))
+            extra = torch.tensor(mon_arr, device=emb1.device).unsqueeze(0)
+            extra = torch.cat(
+                [
+                    extra,
+                    torch.zeros(
+                        (1, TINYBERT_SZ - EXTRA_SZ), device=emb1.device, dtype=torch.float32
+                    ),
+                ]
+            )
+            all_embeddings.extend([emb1, emb2, extra])
 
         for mon_txt, mon_arr in zip(opp_txt, opp_arr):
             emb1 = get_cls_mean_concat(mon_txt[0])
             emb2 = get_cls_mean_concat(mon_txt[1])
             extra = torch.Tensor(mon_arr, device=emb1.device).unsqueeze(0)
-            all_embeddings.append(torch.cat([emb1, emb2, extra], dim=1))
+            extra = torch.cat(
+                [
+                    extra,
+                    torch.zeros(
+                        (1, TINYBERT_SZ - EXTRA_SZ), device=emb1.device, dtype=torch.float32
+                    ),
+                ]
+            )
+            all_embeddings.extend([emb1, emb2, extra])
 
         return torch.cat(all_embeddings, dim=0)  # should be (13, 1270)
 

@@ -5,6 +5,7 @@ import torch.nn.init as init
 
 class CLSReducer(nn.Module):
     CLS, FIELD, ALLY, FOE = 0, 1, 2, 3
+    TEXT_A, TEXT_B, NUM = 0, 1, 2
 
     def __init__(
         self,
@@ -18,8 +19,8 @@ class CLSReducer(nn.Module):
         emb_std: float = 0.02,
     ):
         super().__init__()
-        if seq_len != 13:
-            raise ValueError("This CLSReducer assumes seq_len=13 (field + 6 ally + 6 foe).")
+        if seq_len != 37:
+            raise ValueError("This CLSReducer assumes seq_len=37 (field + 12*(textA,textB,num)).")
 
         self.seq_len = seq_len
         self.feat_dim = feat_dim
@@ -30,7 +31,9 @@ class CLSReducer(nn.Module):
 
         self.cls = nn.Parameter(torch.zeros(1, 1, d_model))
         self.pos_emb = nn.Parameter(torch.zeros(1, seq_len + 1, d_model))
+
         self.type_emb = nn.Embedding(4, d_model)
+        self.part_emb = nn.Embedding(3, d_model)
 
         enc_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -43,13 +46,39 @@ class CLSReducer(nn.Module):
         )
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=nlayer)
 
-        type_ids = torch.tensor(
-            [self.CLS, self.FIELD] + [self.ALLY] * 6 + [self.FOE] * 6,
-            dtype=torch.long,
-        )
+        type_ids, part_ids = self._build_ids()
         self.register_buffer("type_ids", type_ids, persistent=False)
+        self.register_buffer("part_ids", part_ids, persistent=False)
 
         self._init_weights()
+
+    def _build_ids(self):
+        assert self.seq_len == 37
+        type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
+        part_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
+
+        type_ids[0] = self.CLS
+        part_ids[0] = self.TEXT_A
+
+        type_ids[1] = self.FIELD
+        part_ids[1] = self.TEXT_A
+
+        k = 2
+        for _ in range(6):
+            type_ids[k : k + 3] = self.ALLY
+            part_ids[k : k + 3] = torch.tensor(
+                [self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long
+            )
+            k += 3
+
+        for _ in range(6):
+            type_ids[k : k + 3] = self.FOE
+            part_ids[k : k + 3] = torch.tensor(
+                [self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long
+            )
+            k += 3
+
+        return type_ids, part_ids
 
     @torch.no_grad()
     def _init_weights(self):
@@ -59,12 +88,13 @@ class CLSReducer(nn.Module):
         init.normal_(self.cls, std=self.emb_std)
         init.normal_(self.pos_emb, std=self.emb_std)
         init.normal_(self.type_emb.weight, std=self.emb_std)
+        init.normal_(self.part_emb.weight, std=self.emb_std)
 
         for p in self.encoder.parameters():
             if p.dim() > 1:
-                nn.init.xavier_uniform_(p)  # all other parameters
+                nn.init.xavier_uniform_(p)
             else:
-                nn.init.zeros_(p)  # set biases to zero
+                nn.init.zeros_(p)
 
     def forward(
         self, obs: torch.Tensor, key_padding_mask: torch.Tensor | None = None
@@ -88,8 +118,9 @@ class CLSReducer(nn.Module):
         cls = self.cls.expand(B, -1, -1)
         x = torch.cat([cls, x], dim=1)
 
-        t = self.type_emb(self.type_ids).expand(B, -1, -1)
-        x = x + self.pos_emb + t
+        type_e = self.type_emb(self.type_ids).unsqueeze(0).expand(B, -1, -1)
+        part_e = self.part_emb(self.part_ids).unsqueeze(0).expand(B, -1, -1)
+        x = x + self.pos_emb + type_e + part_e
 
         x = self.encoder(x, src_key_padding_mask=key_padding_mask)
         return x[:, 0]
