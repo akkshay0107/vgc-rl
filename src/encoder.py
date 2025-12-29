@@ -342,6 +342,9 @@ class Encoder:
         field_emb = get_cls_mean_concat(field_conditions)
         all_embeddings.append(field_emb)
 
+        # potentially add a line that stores any overflowing information
+        # such as our own and oppositions tera used
+
         for mon_txt, mon_arr in zip(p1_txt, p1_arr):
             emb1 = get_cls_mean_concat(mon_txt[0])
             emb2 = get_cls_mean_concat(mon_txt[1])
