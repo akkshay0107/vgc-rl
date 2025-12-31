@@ -20,7 +20,7 @@ from lookups import (
 
 TINYBERT_SZ = 624
 EXTRA_SZ = 28
-OBS_DIM = (37, TINYBERT_SZ)  # 1 field row + 3 tokens * 12 pokemon
+OBS_DIM = (38, TINYBERT_SZ)  # 1 field row + 1 info row + 3 tokens * 12 pokemon
 
 # Define action space parameters (from gen9vgcenv.py)
 NUM_SWITCHES = 6
@@ -60,9 +60,6 @@ class Encoder:
             cond_str = "We do not know about this pokemon."
 
         movelist = list(pokemon.moves.keys())
-        if movelist is None:
-            pass
-
         joint_movelist = ",".join(movelist)
         id = POKEMON[joint_movelist]
 
@@ -151,10 +148,7 @@ class Encoder:
     ) -> tuple[list[tuple[str, str]], list[float], list[tuple[str, str]], list[float]]:
         p1_mon_txt = []
         p1_mon_arr = []
-        possible_switches = set()
-        for switches in battle.available_switches:
-            for mon in switches:
-                possible_switches.add(mon)
+        possible_switches = {mon for switches in battle.available_switches for mon in switches}
 
         for mon in battle.team.values():
             if mon.fainted:
@@ -202,44 +196,48 @@ class Encoder:
         5 = tailwind turns
         6 = aurora veil turns
         """
-        # Encode global field conditions for both players
         p1_row = [0.0] * 7
         p2_row = [0.0] * 7
-        for field_row in [p1_row, p2_row]:
-            trick_room_turns = 0
-            grassy_terrain_turns = 0
-            psychic_terrain_turns = 0
-            if battle.fields:
-                grassy_terrain_start = battle.fields.get(Field.GRASSY_TERRAIN, -1)
-                psychic_terrain_start = battle.fields.get(Field.PSYCHIC_TERRAIN, -1)
-                trick_room_start = battle.fields.get(Field.TRICK_ROOM, -1)
 
-                if grassy_terrain_start >= 0:
-                    grassy_terrain_turns = 5 - (battle.turn - grassy_terrain_start)
-                elif psychic_terrain_start >= 0:
-                    psychic_terrain_turns = 5 - (battle.turn - psychic_terrain_start)
+        # Global effects
+        trick_room_turns = 0
+        grassy_terrain_turns = 0
+        psychic_terrain_turns = 0
+        if battle.fields:
+            grassy_terrain_start = battle.fields.get(Field.GRASSY_TERRAIN, -1)
+            psychic_terrain_start = battle.fields.get(Field.PSYCHIC_TERRAIN, -1)
+            trick_room_start = battle.fields.get(Field.TRICK_ROOM, -1)
 
-                if trick_room_start >= 0:
-                    trick_room_turns = 5 - (battle.turn - trick_room_start)
+            if grassy_terrain_start >= 0:
+                grassy_terrain_turns = 5 - (battle.turn - grassy_terrain_start)
+            elif psychic_terrain_start >= 0:
+                psychic_terrain_turns = 5 - (battle.turn - psychic_terrain_start)
 
-            field_row[0] = trick_room_turns
-            field_row[1] = grassy_terrain_turns
-            field_row[2] = psychic_terrain_turns
+            if trick_room_start >= 0:
+                trick_room_turns = 5 - (battle.turn - trick_room_start)
 
-            sun_turns = 0
-            rain_turns = 0
-            if battle._weather:
-                rain_start = battle._weather.get(Weather.RAINDANCE, -1)
-                sun_start = battle._weather.get(Weather.SUNNYDAY, -1)
-                if rain_start >= 0:
-                    rain_turns = 5 - (battle.turn - rain_start)
-                elif sun_start >= 0:
-                    sun_turns = 5 - (battle.turn - sun_start)
+        sun_turns = 0
+        rain_turns = 0
+        if battle._weather:
+            rain_start = battle._weather.get(Weather.RAINDANCE, -1)
+            sun_start = battle._weather.get(Weather.SUNNYDAY, -1)
+            if rain_start >= 0:
+                rain_turns = 5 - (battle.turn - rain_start)
+            elif sun_start >= 0:
+                sun_turns = 5 - (battle.turn - sun_start)
 
-            field_row[3] = sun_turns
-            field_row[4] = rain_turns
+        global_effects = [
+            trick_room_turns,
+            grassy_terrain_turns,
+            psychic_terrain_turns,
+            sun_turns,
+            rain_turns,
+        ]
+        for i in range(5):
+            p1_row[i] = global_effects[i]
+            p2_row[i] = global_effects[i]
 
-        # Local effects
+        # Player 1 local effects
         tailwind_turns = 0
         veil_turns = 0
         if battle.side_conditions:
@@ -252,6 +250,7 @@ class Encoder:
         p1_row[5] = tailwind_turns
         p1_row[6] = veil_turns
 
+        # Player 2 local effects
         tailwind_turns = 0
         veil_turns = 0
         if battle.opponent_side_conditions:
@@ -268,7 +267,6 @@ class Encoder:
 
     @staticmethod
     def _get_locals_as_text(battle: DoubleBattle) -> str:
-        p1_row, opp_row = Encoder._get_locals(battle)
         header = (
             "Effects: Trick Room (reverses speed order), "
             "Grassy Terrain (heals 1/16 of max HP for grounded Pokémon and boosts Grass moves by 30%), "
@@ -306,6 +304,24 @@ class Encoder:
         return header + " " + p1_desc + ". " + p2_desc + "."
 
     @staticmethod
+    def _get_info(p1_tera: Pokemon | None, p2_tera: Pokemon | None) -> str:
+        # As of right now this just stores the global tera information
+        # realistically this can be extended to store more information
+        # like speed order of pokemon so far
+
+        if p1_tera is None:
+            p1_str = "You have not terastallized yet."
+        else:
+            p1_str = f"You have terastallized your {p1_tera.species} into the {p1_tera.tera_type} type. You cannot terastallize any other pokemon."
+
+        if p2_tera is None:
+            p2_str = "The opponent has not terastallized yet."
+        else:
+            p2_str = f"The opponent has terastallized their {p2_tera.species} into the {p2_tera.tera_type} type. They cannot terastallize any other pokemon."
+
+        return p1_str + p2_str
+
+    @staticmethod
     def encode_battle_state(battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
         if battle.teampreview:
@@ -333,47 +349,47 @@ class Encoder:
         field_conditions = Encoder._get_locals_as_text(battle)
 
         # combine the stuff above into one observation
-        # row 0: pad p1 and opp locals into a string and pass it through encoder (1, 624)
-        # row 1-6: pokemons for p1 (6, 1270)
-        # rows 7-12: pokemons for p2 (6, 1270)
-
+        # row 0: pad p1 and opp locals into a string
+        # row 1: extra information (for now tera usage)
+        # row 2-19: 3 rows per pokemon in players team
+        # row 20-37: 3 rows per pokemon in opponents team
         all_embeddings = []
 
         field_emb = get_cls_mean_concat(field_conditions)
         all_embeddings.append(field_emb)
 
-        # potentially add a line that stores any overflowing information
-        # such as our own and oppositions tera used
+        p1_tera = None
+        for mon in battle.team.values():
+            if mon.is_terastallized:
+                p1_tera = mon
+                break
 
-        for mon_txt, mon_arr in zip(p1_txt, p1_arr):
-            emb1 = get_cls_mean_concat(mon_txt[0])
-            emb2 = get_cls_mean_concat(mon_txt[1])
-            extra = torch.tensor(mon_arr, device=emb1.device).unsqueeze(0)
-            extra = torch.cat(
-                [
-                    extra,
-                    torch.zeros(
-                        (1, TINYBERT_SZ - EXTRA_SZ), device=emb1.device, dtype=torch.float32
-                    ),
-                ]
-            )
-            all_embeddings.extend([emb1, emb2, extra])
+        opp_tera = None
+        for mon in battle.opponent_team.values():
+            if mon.is_terastallized:
+                opp_tera = mon
+                break
 
-        for mon_txt, mon_arr in zip(opp_txt, opp_arr):
-            emb1 = get_cls_mean_concat(mon_txt[0])
-            emb2 = get_cls_mean_concat(mon_txt[1])
-            extra = torch.Tensor(mon_arr, device=emb1.device).unsqueeze(0)
-            extra = torch.cat(
-                [
-                    extra,
-                    torch.zeros(
-                        (1, TINYBERT_SZ - EXTRA_SZ), device=emb1.device, dtype=torch.float32
-                    ),
-                ]
-            )
-            all_embeddings.extend([emb1, emb2, extra])
+        info_emb = get_cls_mean_concat(Encoder._get_info(p1_tera, opp_tera))
+        all_embeddings.append(info_emb)
 
-        return torch.cat(all_embeddings, dim=0)  # should be (13, 1270)
+        def process_pokemon_embeddings(pokemon_texts, pokemon_arrays):
+            for mon_txt, mon_arr in zip(pokemon_texts, pokemon_arrays):
+                emb1 = get_cls_mean_concat(mon_txt[0])
+                emb2 = get_cls_mean_concat(mon_txt[1])
+                extra = torch.tensor(
+                    mon_arr, device=emb1.device, dtype=torch.float32
+                ).unsqueeze(0)
+                padding = torch.zeros(
+                    (1, TINYBERT_SZ - EXTRA_SZ), device=emb1.device, dtype=torch.float32
+                )
+                extra_padded = torch.cat([extra, padding], dim=1)
+                all_embeddings.extend([emb1, emb2, extra_padded])
+
+        process_pokemon_embeddings(p1_txt, p1_arr)
+        process_pokemon_embeddings(opp_txt, opp_arr)
+
+        return torch.cat(all_embeddings, dim=0)
 
     @staticmethod
     def get_action_mask(battle: AbstractBattle):

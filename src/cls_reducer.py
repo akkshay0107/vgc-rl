@@ -19,7 +19,7 @@ class CLSReducer(nn.Module):
         emb_std: float = 0.02,
     ):
         super().__init__()
-        if seq_len != 37:
+        if seq_len != 38:
             raise ValueError("This CLSReducer assumes seq_len=37 (field + 12*(textA,textB,num)).")
 
         self.seq_len = seq_len
@@ -60,23 +60,18 @@ class CLSReducer(nn.Module):
         type_ids[0] = self.CLS
         part_ids[0] = self.TEXT_A
 
-        type_ids[1] = self.FIELD
-        part_ids[1] = self.TEXT_A
+        type_ids[1] = type_ids[2] = self.FIELD
+        part_ids[1] = part_ids[2] = self.TEXT_A
 
-        k = 2
-        for _ in range(6):
-            type_ids[k : k + 3] = self.ALLY
-            part_ids[k : k + 3] = torch.tensor(
-                [self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long
-            )
-            k += 3
+        part_ids_slice = torch.tensor([self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long)
 
-        for _ in range(6):
-            type_ids[k : k + 3] = self.FOE
-            part_ids[k : k + 3] = torch.tensor(
-                [self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long
-            )
-            k += 3
+        # Ally pokemon (6 pokemon * 3 parts)
+        type_ids[3:21] = self.ALLY
+        part_ids[3:21] = part_ids_slice.repeat(6)
+
+        # Foe pokemon (6 pokemon * 3 parts)
+        type_ids[21:39] = self.FOE
+        part_ids[21:39] = part_ids_slice.repeat(6)
 
         return type_ids, part_ids
 
