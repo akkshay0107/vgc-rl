@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
+from encoder import OBS_DIM
+
 
 class CLSReducer(nn.Module):
     CLS, FIELD, ALLY, FOE = 0, 1, 2, 3
@@ -13,14 +15,16 @@ class CLSReducer(nn.Module):
         feat_dim: int,
         d_model: int = 256,
         nhead: int = 8,
-        nlayer: int = 2,
+        nlayer: int = 3,
         dim_feedforward: int = 1024,
         dropout: float = 0.0,
         emb_std: float = 0.02,
     ):
         super().__init__()
-        if seq_len != 38:
-            raise ValueError("This CLSReducer assumes seq_len=37 (field + 12*(textA,textB,num)).")
+        if seq_len != OBS_DIM[0]:
+            raise ValueError(
+                f"This CLSReducer assumes seq_len={OBS_DIM[0]} (field + extra info + 12*(textA,textB,num))."
+            )
 
         self.seq_len = seq_len
         self.feat_dim = feat_dim
@@ -53,7 +57,7 @@ class CLSReducer(nn.Module):
         self._init_weights()
 
     def _build_ids(self):
-        assert self.seq_len == 37
+        assert self.seq_len == OBS_DIM[0]
         type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
         part_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
 

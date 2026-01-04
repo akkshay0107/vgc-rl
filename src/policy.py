@@ -95,7 +95,7 @@ class PolicyNet(nn.Module):
         log_prob1 = cat1.log_prob(action1)
 
         # Adjust logits for the second Pokemon to enforce mutual exclusivity with action1
-        self._apply_sequential_masks(logits, action1, action_mask)
+        logits = self._apply_sequential_masks(logits, action1, action_mask)
         cat2 = Categorical(logits=logits[:, 1])
         action2 = cat2.sample()
         log_prob2 = cat2.log_prob(action2)
@@ -125,7 +125,7 @@ class PolicyNet(nn.Module):
             return policy_logits
 
         logits = self._apply_masks(policy_logits, action_mask)  # (B, 2, A)
-        self._apply_sequential_masks(logits, action_taken[:, 0], action_mask)
+        logits = self._apply_sequential_masks(logits, action_taken[:, 0], action_mask)
         return logits
 
     def evaluate_actions(
@@ -137,7 +137,7 @@ class PolicyNet(nn.Module):
         if action_mask is not None:
             logits = self._apply_masks(policy_logits, action_mask)
             # Apply mutual exclusivity mask deterministically for given actions
-            self._apply_sequential_masks(logits, actions[:, 0], action_mask)
+            logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask)
         else:
             logits = policy_logits
 
@@ -184,5 +184,6 @@ class PolicyNet(nn.Module):
         no_valid = mask2.sum(-1) == 0
         mask2[no_valid, 0] = 1
 
-        logits[:, 1].masked_fill_(mask2 == 0, float("-inf"))  # inplace modification
-        # If needed modify the above function to not modify inplace since it can mess with autograd
+        logits_out = logits.clone()
+        logits_out[:, 1] = logits[:, 1].masked_fill(mask2 == 0, float("-inf"))
+        return logits_out
