@@ -1,4 +1,5 @@
 import asyncio
+import random
 from pathlib import Path
 
 import torch
@@ -12,10 +13,31 @@ from policy import PolicyNet
 from teams import RandomTeamFromPool
 
 
+class TeamPreviewHandler:
+    """
+    Class to handler team preview selection for the RL player
+    """
+
+    def __init__(self) -> None:
+        pass
+
+    def select_team(self, battle: AbstractBattle) -> str:
+        # TODO: implement this entirely, if needed move to a seperate file
+        # as of rn just copied the random teampreview impl from poke-env
+        members = list(range(1, len(battle.team) + 1))
+        random.shuffle(members)
+        return "/team " + "".join([str(c) for c in members])
+
+
 class RLPlayer(Player):
-    def __init__(self, policy: PolicyNet, *args, **kwargs):
+    """
+    Class that plays moves as per the trained policy net.
+    """
+
+    def __init__(self, policy: PolicyNet, teampreview_handler: TeamPreviewHandler, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.policy = policy
+        self.teampreview_handler = teampreview_handler
 
     def _get_action(self, battle: AbstractBattle):
         obs = self.get_observation(battle)
@@ -39,7 +61,7 @@ class RLPlayer(Player):
         return Encoder.encode_battle_state(battle)
 
     def teampreview(self, battle: AbstractBattle) -> str:
-        return super().random_teampreview(battle)
+        return self.teampreview_handler.select_team(battle)
 
 
 async def main():
@@ -56,8 +78,11 @@ async def main():
     policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
     policy.load_state_dict(checkpoint["model_state_dict"])
 
+    tp_handler = TeamPreviewHandler()
+
     rl_player = RLPlayer(
         policy=policy,
+        teampreview_handler=tp_handler,
         account_configuration=AccountConfiguration("RLPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,

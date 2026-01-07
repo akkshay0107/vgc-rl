@@ -159,6 +159,7 @@ def policy_phase():
     flat_ret = returns.reshape(-1)
 
     # Sample minibatches and train on minibatch
+    # TODO: add early kl stopping
     sz = flat_obs.shape[0]
     for _ in range(ppo_epochs):
         indices = torch.randperm(sz, device=policy.device)
@@ -219,6 +220,7 @@ def auxiliary_phase():
     if len(replay_buffer) < batch_size:
         return
 
+    # TODO: fetch entire rollouts from buffer instead of random batches
     for _ in range(n_aux_epochs):
         indices = np.random.choice(len(replay_buffer), batch_size, replace=False)
         batch = [replay_buffer[i] for i in indices]
