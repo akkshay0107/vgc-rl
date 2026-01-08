@@ -1,32 +1,17 @@
 import asyncio
-import random
 from pathlib import Path
 
 import torch
 from poke_env import AccountConfiguration, LocalhostServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import DefaultBattleOrder, MaxBasePowerPlayer, Player, RandomPlayer
+from torch.distributions import Categorical
 
 from encoder import ACT_SIZE, OBS_DIM, Encoder
 from env import Gen9VGCEnv
 from policy import PolicyNet
+from teampreview import TeamPreviewHandler
 from teams import RandomTeamFromPool
-
-
-class TeamPreviewHandler:
-    """
-    Class to handler team preview selection for the RL player
-    """
-
-    def __init__(self) -> None:
-        pass
-
-    def select_team(self, battle: AbstractBattle) -> str:
-        # TODO: implement this entirely, if needed move to a seperate file
-        # as of rn just copied the random teampreview impl from poke-env
-        members = list(range(1, len(battle.team) + 1))
-        random.shuffle(members)
-        return "/team " + "".join([str(c) for c in members])
 
 
 class RLPlayer(Player):
@@ -34,10 +19,49 @@ class RLPlayer(Player):
     Class that plays moves as per the trained policy net.
     """
 
-    def __init__(self, policy: PolicyNet, teampreview_handler: TeamPreviewHandler, *args, **kwargs):
+    def __init__(
+        self,
+        policy: PolicyNet,
+        teampreview_handler: TeamPreviewHandler,
+        k: int = ACT_SIZE,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.policy = policy
         self.teampreview_handler = teampreview_handler
+
+        assert k >= 1 and k <= ACT_SIZE
+        self.k = k
+
+    def _top_k(self, obs, action_mask):
+        B = obs.shape[0]
+        z = self.policy.reducer(obs)
+        x = self.policy.shared_backbone(z)
+        policy_logits = self.policy.policy_head(x).reshape(B, 2, self.policy.act_size)
+        logits = self.policy._apply_masks(policy_logits, action_mask)
+
+        p1 = logits[:, 0]
+        idx1 = torch.topk(p1, self.k, dim=-1).indices  # (B, k)
+        # binary mask with 1 at top-k positions
+        topk_mask1 = torch.zeros_like(p1)
+        topk_mask1.scatter_(1, idx1, 1.0)
+        p1 = p1.masked_fill(topk_mask1 == 0, float("-inf"))
+
+        cat1 = Categorical(logits=p1)
+        action1 = cat1.sample()  # (B,)
+
+        logits = self.policy._apply_sequential_masks(logits, action1, action_mask)
+        p2 = logits[:, 1]
+        idx2 = torch.topk(p2, self.k, dim=-1).indices
+        topk_mask2 = torch.zeros_like(p2)
+        topk_mask2.scatter_(1, idx2, 1.0)
+        p2 = p2.masked_fill(topk_mask2 == 0, float("-inf"))
+
+        cat2 = Categorical(logits=p2)
+        action2 = cat2.sample()  # (B,)
+
+        return torch.stack([action1, action2], dim=-1)
 
     def _get_action(self, battle: AbstractBattle):
         obs = self.get_observation(battle)
@@ -45,10 +69,8 @@ class RLPlayer(Player):
         with torch.no_grad():
             obs_tensor = torch.as_tensor(obs, device=self.policy.device).unsqueeze(0)
             action_mask_tensor = action_mask.unsqueeze(0)
-            _, _, actions, _ = self.policy.forward(
-                obs_tensor, action_mask_tensor, sample_actions=True
-            )
-        return actions[0].cpu().numpy()  # type: ignore
+            actions = self._top_k(obs_tensor, action_mask_tensor)
+        return actions[0].cpu().numpy()
 
     def choose_move(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)

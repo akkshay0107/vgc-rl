@@ -89,7 +89,6 @@ class PolicyNet(nn.Module):
         # Mask logits with -inf where actions are illegal
         logits = self._apply_masks(policy_logits, action_mask)
 
-        # Sample actions for first Pokemon using masked logits distribution
         cat1 = Categorical(logits=logits[:, 0])
         action1 = cat1.sample()
         log_prob1 = cat1.log_prob(action1)
@@ -131,24 +130,20 @@ class PolicyNet(nn.Module):
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # Get logits and value prediction without sampling
         policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
 
         if action_mask is not None:
             logits = self._apply_masks(policy_logits, action_mask)
-            # Apply mutual exclusivity mask deterministically for given actions
             logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask)
         else:
             logits = policy_logits
 
-        # Calculate log probabilities of provided actions under the masked distributions
         cat1 = Categorical(logits=logits[:, 0])
         cat2 = Categorical(logits=logits[:, 1])
         log_prob1 = cat1.log_prob(actions[:, 0])
         log_prob2 = cat2.log_prob(actions[:, 1])
         log_prob = log_prob1 + log_prob2
 
-        # Compute entropy for both action distributions
         entropy1 = cat1.entropy()
         entropy2 = cat2.entropy()
         # entropy approximated as if action1 and action2 are independent
