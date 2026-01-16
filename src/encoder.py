@@ -77,7 +77,11 @@ class Encoder:
         )
 
         def describe_effect(effect: Effect, turns: int) -> str:
-            return f"{EFFECT_DESCRIPTION[effect]}. Has been active for {turns} turns."
+            effect_desc = EFFECT_DESCRIPTION.get(effect)
+            if effect_desc is not None:
+                return f"{effect_desc}. Has been active for {turns} turns."
+            else:
+                return ""
 
         effect_desc = " ".join(
             [describe_effect(effect, turn) for effect, turn in pokemon.effects.items()]
@@ -377,9 +381,7 @@ class Encoder:
             for mon_txt, mon_arr in zip(pokemon_texts, pokemon_arrays):
                 emb1 = get_cls_mean_concat(mon_txt[0])
                 emb2 = get_cls_mean_concat(mon_txt[1])
-                extra = torch.tensor(
-                    mon_arr, device=emb1.device, dtype=torch.float32
-                ).unsqueeze(0)
+                extra = torch.tensor(mon_arr, device=emb1.device, dtype=torch.float32).unsqueeze(0)
                 padding = torch.zeros(
                     (1, TINYBERT_SZ - EXTRA_SZ), device=emb1.device, dtype=torch.float32
                 )

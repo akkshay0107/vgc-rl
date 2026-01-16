@@ -24,6 +24,7 @@ entropy_coef = 0.01
 value_coef = 0.5
 beta_clone = 1.0  # weight given to KL divergence term for Aux phase
 max_grad_norm = 0.5
+target_kl = 0.015  # for early KL stopping
 
 env = SimEnv.build_env()
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
@@ -159,9 +160,10 @@ def policy_phase():
     flat_ret = returns.reshape(-1)
 
     # Sample minibatches and train on minibatch
-    # TODO: add early kl stopping
     sz = flat_obs.shape[0]
     for _ in range(ppo_epochs):
+        early_stop = False
+        avg_kl = 0.0
         indices = torch.randperm(sz, device=policy.device)
         for start in range(0, sz, batch_size):
             minibatch = indices[start : start + batch_size]
@@ -176,11 +178,14 @@ def policy_phase():
                 mb_obs, mb_act, mb_mask
             )  # add entropy term later
 
+            kl = (new_log_prob - mb_old_log_prob).mean()
+
             ratio = (new_log_prob - mb_old_log_prob).exp()
             surr1 = ratio * mb_adv
             surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * mb_adv
             policy_loss = -torch.min(surr1, surr2).mean()  # maximize clip objective
 
+            # Add value clipping
             value_loss = F.mse_loss(values.squeeze(-1), mb_ret)
 
             joint_loss = (
@@ -191,6 +196,16 @@ def policy_phase():
             joint_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
             optimizer.step()
+
+            avg_kl += kl.item()
+            num_batches = 1 + start / batch_size
+            if avg_kl >= target_kl * num_batches:
+                early_stop = True
+                break
+
+        if early_stop:
+            # Add message here ig if needed
+            break
 
     # Filling out replay buffer
     with torch.no_grad():
