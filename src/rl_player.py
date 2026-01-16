@@ -23,7 +23,7 @@ class RLPlayer(Player):
         self,
         policy: PolicyNet,
         teampreview_handler: TeamPreviewHandler,
-        k: int = ACT_SIZE,
+        p: float = 0.9,
         *args,
         **kwargs,
     ):
@@ -31,34 +31,36 @@ class RLPlayer(Player):
         self.policy = policy
         self.teampreview_handler = teampreview_handler
 
-        assert k >= 1 and k <= ACT_SIZE
-        self.k = k
+        assert 0.0 <= p <= 1.0
+        self.p = p
 
-    def _top_k(self, obs, action_mask):
+    def _apply_top_p(self, logits: torch.Tensor) -> torch.Tensor:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+        sorted_indices_to_remove = cumulative_probs > self.p
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = False
+
+        sorted_logits[sorted_indices_to_remove] = float("-inf")
+
+        return sorted_logits.scatter(-1, sorted_indices, sorted_logits)
+
+    def _top_p(self, obs, action_mask):
         B = obs.shape[0]
         z = self.policy.reducer(obs)
         x = self.policy.shared_backbone(z)
         policy_logits = self.policy.policy_head(x).reshape(B, 2, self.policy.act_size)
         logits = self.policy._apply_masks(policy_logits, action_mask)
 
-        p1 = logits[:, 0]
-        idx1 = torch.topk(p1, self.k, dim=-1).indices  # (B, k)
-        # binary mask with 1 at top-k positions
-        topk_mask1 = torch.zeros_like(p1)
-        topk_mask1.scatter_(1, idx1, 1.0)
-        p1 = p1.masked_fill(topk_mask1 == 0, float("-inf"))
-
-        cat1 = Categorical(logits=p1)
+        p1_logits = self._apply_top_p(logits[:, 0])
+        cat1 = Categorical(logits=p1_logits)
         action1 = cat1.sample()  # (B,)
 
         logits = self.policy._apply_sequential_masks(logits, action1, action_mask)
-        p2 = logits[:, 1]
-        idx2 = torch.topk(p2, self.k, dim=-1).indices
-        topk_mask2 = torch.zeros_like(p2)
-        topk_mask2.scatter_(1, idx2, 1.0)
-        p2 = p2.masked_fill(topk_mask2 == 0, float("-inf"))
-
-        cat2 = Categorical(logits=p2)
+        p2_logits = self._apply_top_p(logits[:, 1])
+        cat2 = Categorical(logits=p2_logits)
         action2 = cat2.sample()  # (B,)
 
         return torch.stack([action1, action2], dim=-1)
@@ -69,7 +71,7 @@ class RLPlayer(Player):
         with torch.no_grad():
             obs_tensor = torch.as_tensor(obs, device=self.policy.device).unsqueeze(0)
             action_mask_tensor = action_mask.unsqueeze(0)
-            actions = self._top_k(obs_tensor, action_mask_tensor)
+            actions = self._top_p(obs_tensor, action_mask_tensor)
         return actions[0].cpu().numpy()
 
     def choose_move(self, battle: AbstractBattle):

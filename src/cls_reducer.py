@@ -34,7 +34,6 @@ class CLSReducer(nn.Module):
         self.in_proj = nn.Linear(feat_dim, d_model)
 
         self.cls = nn.Parameter(torch.zeros(1, 1, d_model))
-        self.pos_emb = nn.Parameter(torch.zeros(1, seq_len + 1, d_model))
 
         self.type_emb = nn.Embedding(4, d_model)
         self.part_emb = nn.Embedding(3, d_model)
@@ -59,23 +58,15 @@ class CLSReducer(nn.Module):
     def _build_ids(self):
         assert self.seq_len == OBS_DIM[0]
         type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
-        part_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
-
         type_ids[0] = self.CLS
-        part_ids[0] = self.TEXT_A
-
         type_ids[1] = type_ids[2] = self.FIELD
-        part_ids[1] = part_ids[2] = self.TEXT_A
-
-        part_ids_slice = torch.tensor([self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long)
-
         # Ally pokemon (6 pokemon * 3 parts)
         type_ids[3:21] = self.ALLY
-        part_ids[3:21] = part_ids_slice.repeat(6)
-
         # Foe pokemon (6 pokemon * 3 parts)
         type_ids[21:39] = self.FOE
-        part_ids[21:39] = part_ids_slice.repeat(6)
+
+        # first 3 tokens do not have a part embedding (they are all of one part each)
+        part_ids = torch.tensor([self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long).repeat(12)
 
         return type_ids, part_ids
 
@@ -85,7 +76,6 @@ class CLSReducer(nn.Module):
         init.zeros_(self.in_proj.bias)
 
         init.normal_(self.cls, std=self.emb_std)
-        init.normal_(self.pos_emb, std=self.emb_std)
         init.normal_(self.type_emb.weight, std=self.emb_std)
         init.normal_(self.part_emb.weight, std=self.emb_std)
 
@@ -119,7 +109,8 @@ class CLSReducer(nn.Module):
 
         type_e = self.type_emb(self.type_ids).unsqueeze(0).expand(B, -1, -1)
         part_e = self.part_emb(self.part_ids).unsqueeze(0).expand(B, -1, -1)
-        x = x + self.pos_emb + type_e + part_e
+        x = x + type_e
+        x[:, 3:, :] += part_e
 
         x = self.encoder(x, src_key_padding_mask=key_padding_mask)
         return x[:, 0]
