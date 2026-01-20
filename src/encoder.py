@@ -70,7 +70,11 @@ class Encoder:
 
         moves_desc = " ".join([get_move_desc(move, MOVES[move]) for move in movelist])
 
-        item_desc = "Holds no item." if pokemon.item is None else ITEM_DESCRIPTION[pokemon.item]
+        item_desc = (
+            "Holds no item."
+            if (pokemon.item is None or pokemon.item == "")
+            else ITEM_DESCRIPTION[pokemon.item]
+        )
 
         status_desc = (
             "No status condition." if pokemon.status is None else STATUS_DESCRIPTION[pokemon.status]

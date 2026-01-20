@@ -156,6 +156,7 @@ def policy_phase():
     flat_act = flat_collect("actions")
     flat_masks = flat_collect("action_masks")
     flat_old_log_prob = flat_collect("log_probs")
+    flat_old_values = flat_collect("values")
     flat_adv = advantages.reshape(-1)
     flat_ret = returns.reshape(-1)
 
@@ -170,6 +171,7 @@ def policy_phase():
             mb_obs = flat_obs[minibatch]
             mb_act = flat_act[minibatch]
             mb_old_log_prob = flat_old_log_prob[minibatch]
+            mb_old_values = flat_old_values[minibatch]
             mb_mask = flat_masks[minibatch]
             mb_adv = flat_adv[minibatch]
             mb_ret = flat_ret[minibatch]
@@ -185,8 +187,13 @@ def policy_phase():
             surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * mb_adv
             policy_loss = -torch.min(surr1, surr2).mean()  # maximize clip objective
 
-            # Add value clipping
-            value_loss = F.mse_loss(values.squeeze(-1), mb_ret)
+            values = values.squeeze(-1)
+            values_clipped = mb_old_values + torch.clamp(
+                values - mb_old_values, -clip_range, clip_range
+            )
+            value_loss_unclipped = F.mse_loss(values, mb_ret, reduction="none")
+            value_loss_clipped = F.mse_loss(values_clipped, mb_ret, reduction="none")
+            value_loss = torch.max(value_loss_unclipped, value_loss_clipped).mean()
 
             joint_loss = (
                 policy_loss + value_coef * value_loss - entropy_coef * entropy.mean()
