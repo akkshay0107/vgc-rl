@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-from encoder import OBS_DIM
+# from policy import OBS_DIM (cant do this anymore due to circular imports)
 
 
 class CLSReducer(nn.Module):
@@ -21,9 +21,9 @@ class CLSReducer(nn.Module):
         emb_std: float = 0.02,
     ):
         super().__init__()
-        if seq_len != OBS_DIM[0]:
+        if seq_len != 38:
             raise ValueError(
-                f"This CLSReducer assumes seq_len={OBS_DIM[0]} (field + extra info + 12*(textA,textB,num))."
+                "This CLSReducer assumes seq_len=38 (field + extra info + 12*(textA,textB,num))."
             )
 
         self.seq_len = seq_len
@@ -47,7 +47,9 @@ class CLSReducer(nn.Module):
             norm_first=True,
             activation="gelu",
         )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=nlayer)
+        self.encoder = nn.TransformerEncoder(
+            enc_layer, num_layers=nlayer, enable_nested_tensor=False
+        )
 
         type_ids, part_ids = self._build_ids()
         self.register_buffer("type_ids", type_ids, persistent=False)
@@ -56,17 +58,26 @@ class CLSReducer(nn.Module):
         self._init_weights()
 
     def _build_ids(self):
-        assert self.seq_len == OBS_DIM[0]
+        assert self.seq_len == 38
         type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
         type_ids[0] = self.CLS
         type_ids[1] = type_ids[2] = self.FIELD
-        # Ally pokemon (6 pokemon * 3 parts)
-        type_ids[3:21] = self.ALLY
-        # Foe pokemon (6 pokemon * 3 parts)
-        type_ids[21:39] = self.FOE
+        # Ally pokemon text (6 pokemon * 2 parts)
+        type_ids[3:15] = self.ALLY
+        # Foe pokemon text (6 pokemon * 2 parts)
+        type_ids[15:27] = self.FOE
+        # Ally pokemon numerical (6 pokemon * 1 part)
+        type_ids[27:33] = self.ALLY
+        # Foe pokemon numerical (6 pokemon * 1 part)
+        type_ids[33:39] = self.FOE
 
         # first 3 tokens do not have a part embedding (they are all of one part each)
-        part_ids = torch.tensor([self.TEXT_A, self.TEXT_B, self.NUM], dtype=torch.long).repeat(12)
+        part_ids = torch.cat(
+            [
+                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),
+                torch.tensor([self.NUM], dtype=torch.long).repeat(12),
+            ]
+        )
 
         return type_ids, part_ids
 

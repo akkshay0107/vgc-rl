@@ -335,36 +335,8 @@ class Encoder:
         if battle.teampreview:
             return torch.rand(OBS_DIM, dtype=torch.float32)
 
-        # concatenate the output from the CLS token and the mean of all tokens in the sequence
-        def get_cls_mean_concat(text: str, max_len: int = 512) -> torch.Tensor:
-            encoded = Encoder.tokenizer(
-                text, max_length=max_len, padding="max_length", truncation=True, return_tensors="pt"
-            )
-            with torch.no_grad():
-                outputs = Encoder.model(**encoded)
-            last_hidden = outputs.last_hidden_state  # (1, seq_len, 312)
-            cls_emb = last_hidden[:, 0, :]  # (1, 312)
-            # Exclude padding tokens for mean pooling
-            mask = encoded["attention_mask"].unsqueeze(-1)  # (1, seq_len, 1)
-            masked_hidden = last_hidden * mask
-            sum_hidden = masked_hidden.sum(dim=1)  # (1, 312)
-            len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
-            mean_emb = sum_hidden / len_nonpad  # (1, 312)
-            concat_emb = torch.cat([cls_emb, mean_emb], dim=-1)  # (1, 624)
-            return concat_emb
-
         p1_txt, p1_arr, opp_txt, opp_arr = Encoder._get_description(battle)
-        field_conditions = Encoder._get_locals_as_text(battle)
-
-        # combine the stuff above into one observation
-        # row 0: pad p1 and opp locals into a string
-        # row 1: extra information (for now tera usage)
-        # row 2-19: 3 rows per pokemon in players team
-        # row 20-37: 3 rows per pokemon in opponents team
-        all_embeddings = []
-
-        field_emb = get_cls_mean_concat(field_conditions)
-        all_embeddings.append(field_emb)
+        field_txt = Encoder._get_locals_as_text(battle)
 
         p1_tera = None
         for mon in battle.team.values():
@@ -378,24 +350,41 @@ class Encoder:
                 opp_tera = mon
                 break
 
-        info_emb = get_cls_mean_concat(Encoder._get_info(p1_tera, opp_tera))
-        all_embeddings.append(info_emb)
+        info_txt = Encoder._get_info(p1_tera, opp_tera)
 
-        def process_pokemon_embeddings(pokemon_texts, pokemon_arrays):
-            for mon_txt, mon_arr in zip(pokemon_texts, pokemon_arrays):
-                emb1 = get_cls_mean_concat(mon_txt[0])
-                emb2 = get_cls_mean_concat(mon_txt[1])
-                extra = torch.tensor(mon_arr, device=emb1.device, dtype=torch.float32).unsqueeze(0)
-                padding = torch.zeros(
-                    (1, TINYBERT_SZ - EXTRA_SZ), device=emb1.device, dtype=torch.float32
-                )
-                extra_padded = torch.cat([extra, padding], dim=1)
-                all_embeddings.extend([emb1, emb2, extra_padded])
+        # combine the stuff above into one observation
+        # row 0: pad p1 and opp locals into a string
+        # row 1: extra information (for now tera usage)
+        # row 2-25: 2 rows per pokemon in players team and opponents team (text)
+        # row 26-37: 1 rows per pokemon in players team and opponents team (numeric)
+        p1_flat = [text for pair in p1_txt for text in pair]
+        opp_flat = [text for pair in opp_txt for text in pair]
+        text_inputs = [field_txt, info_txt, *p1_flat, *opp_flat]
 
-        process_pokemon_embeddings(p1_txt, p1_arr)
-        process_pokemon_embeddings(opp_txt, opp_arr)
+        # cls mean concat
+        encoded = Encoder.tokenizer(
+            text_inputs,
+            max_length=512,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        with torch.no_grad():
+            outputs = Encoder.model(**encoded)
+        last_hidden = outputs.last_hidden_state  # (26, seq_len, 312)
+        cls_emb = last_hidden[:, 0, :]  # (26, 312)
+        # Exclude padding tokens for mean pooling
+        mask = encoded["attention_mask"].unsqueeze(-1)  # (26, seq_len, 1)
+        masked_hidden = last_hidden * mask
+        sum_hidden = masked_hidden.sum(dim=1)
+        len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
+        mean_emb = sum_hidden / len_nonpad  # (26, 312)
+        text_emb = torch.cat([cls_emb, mean_emb], dim=-1)  # (26, 624)
 
-        return torch.cat(all_embeddings, dim=0)
+        num_emb = torch.tensor(p1_arr + opp_arr)
+        num_emb = torch.cat([num_emb, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)
+
+        return torch.cat([text_emb, num_emb], dim=0)
 
     @staticmethod
     def get_action_mask(battle: AbstractBattle):
