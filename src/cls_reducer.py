@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-# from policy import OBS_DIM (cant do this anymore due to circular imports)
+from observation_builder import OBS_DIM
 
 
 class CLSReducer(nn.Module):
@@ -21,9 +21,9 @@ class CLSReducer(nn.Module):
         emb_std: float = 0.02,
     ):
         super().__init__()
-        if seq_len != 38:
+        if seq_len != OBS_DIM[0]:
             raise ValueError(
-                "This CLSReducer assumes seq_len=38 (field + extra info + 12*(textA,textB,num))."
+                f"This CLSReducer assumes seq_len={OBS_DIM[0]} (field + extra info + 12*(textA,textB,num))."
             )
 
         self.seq_len = seq_len
@@ -58,7 +58,7 @@ class CLSReducer(nn.Module):
         self._init_weights()
 
     def _build_ids(self):
-        assert self.seq_len == 38
+        assert self.seq_len == OBS_DIM[0]
         type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
         type_ids[0] = self.CLS
         type_ids[1] = type_ids[2] = self.FIELD

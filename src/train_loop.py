@@ -6,23 +6,20 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from encoder import ACT_SIZE, OBS_DIM, Encoder
+import observation_builder
 from env import SimEnv
+from observation_builder import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 
 # PPG Hyperparameters
-num_episodes = 100  # num of times entire loop (PPO + Aux phase) takes place
+num_episodes = 1000
 gamma = 0.95  # avg vgc game length = 8 turns (0.95)^8 ~ 0.66
 gae_lambda = 0.95
 lr = 1e-4
-n_policy_iterations = 32  # Number of PPO iters before the Aux phase
-n_aux_epochs = 6  # Number of minibatches sampled in the Aux phase
-ppo_epochs = 1  # Number of minibatches sampled per PPO iter
 batch_size = 64
 clip_range = 0.2
 entropy_coef = 0.01
 value_coef = 0.5
-beta_clone = 1.0  # weight given to KL divergence term for Aux phase
 max_grad_norm = 0.5
 target_kl = 0.015  # for early KL stopping
 
@@ -78,16 +75,18 @@ def collect_rollout():
         obs_agent1 = obs[env.agent1.username]
         obs_agent2 = obs[env.agent2.username]
 
-        action_mask_agent1 = Encoder.get_action_mask(env.battle1)  # type: ignore
-        action_mask_agent2 = Encoder.get_action_mask(env.battle2)  # type: ignore
+        action_mask_agent1 = observation_builder.get_action_mask(env.battle1)  # type: ignore
+        action_mask_agent2 = observation_builder.get_action_mask(env.battle2)  # type: ignore
 
-        obs_batch = torch.stack([obs_agent1, obs_agent2], dim=0).to(policy.device)  # (2, ...)
+        obs_batch = [obs_agent1, obs_agent2]
         action_mask_batch = torch.stack([action_mask_agent1, action_mask_agent2], dim=0).to(
             policy.device
         )
 
         with torch.no_grad():
-            logits, log_probs, sampled_actions, values = policy(obs_batch, action_mask_batch)
+            logits, log_probs, sampled_actions, values = policy.batch_forward(
+                obs_batch, action_mask_batch
+            )
 
         assert sampled_actions is not None and log_probs is not None
         action1_np = sampled_actions[0].cpu().numpy()
@@ -128,184 +127,8 @@ def collect_rollout():
     return episode_data
 
 
-# TODO: parallelize the policy phase
-def policy_phase():
-    episode_data = collect_rollout()
-
-    def flat_collect(by):
-        res = torch.stack([d[by] for d in episode_data])
-        if len(res.shape) <= 2:
-            return res.reshape(-1)
-        return res.reshape(-1, *res.shape[2:])
-
-    # all below of shape (turns, 2, *)
-    values_list = torch.stack([d["values"] for d in episode_data])
-    rewards_list = torch.stack([d["rewards"] for d in episode_data])
-    dones_list = torch.stack([d["dones"] for d in episode_data])
-
-    advantages, returns = compute_gae(
-        rewards=rewards_list,
-        values=values_list,
-        dones=dones_list,
-    )  # advantages, returns: (turns, 2)
-
-    # Normalize advantages
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-    flat_obs = flat_collect("obs")
-    flat_act = flat_collect("actions")
-    flat_masks = flat_collect("action_masks")
-    flat_old_log_prob = flat_collect("log_probs")
-    flat_old_values = flat_collect("values")
-    flat_adv = advantages.reshape(-1)
-    flat_ret = returns.reshape(-1)
-
-    # Sample minibatches and train on minibatch
-    sz = flat_obs.shape[0]
-    for _ in range(ppo_epochs):
-        early_stop = False
-        avg_kl = 0.0
-        indices = torch.randperm(sz, device=policy.device)
-        for start in range(0, sz, batch_size):
-            minibatch = indices[start : start + batch_size]
-            mb_obs = flat_obs[minibatch]
-            mb_act = flat_act[minibatch]
-            mb_old_log_prob = flat_old_log_prob[minibatch]
-            mb_old_values = flat_old_values[minibatch]
-            mb_mask = flat_masks[minibatch]
-            mb_adv = flat_adv[minibatch]
-            mb_ret = flat_ret[minibatch]
-
-            new_log_prob, entropy, values = policy.evaluate_actions(
-                mb_obs, mb_act, mb_mask
-            )  # add entropy term later
-
-            kl = (new_log_prob - mb_old_log_prob).mean()
-
-            ratio = (new_log_prob - mb_old_log_prob).exp()
-            surr1 = ratio * mb_adv
-            surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * mb_adv
-            policy_loss = -torch.min(surr1, surr2).mean()  # maximize clip objective
-
-            values = values.squeeze(-1)
-            values_clipped = mb_old_values + torch.clamp(
-                values - mb_old_values, -clip_range, clip_range
-            )
-            value_loss_unclipped = F.mse_loss(values, mb_ret, reduction="none")
-            value_loss_clipped = F.mse_loss(values_clipped, mb_ret, reduction="none")
-            value_loss = torch.max(value_loss_unclipped, value_loss_clipped).mean()
-
-            joint_loss = (
-                policy_loss + value_coef * value_loss - entropy_coef * entropy.mean()
-            )  # -ve for entropy since we want to maximize entropy term
-
-            optimizer.zero_grad(set_to_none=True)
-            joint_loss.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-            optimizer.step()
-
-            avg_kl += kl.item()
-            num_batches = 1 + start / batch_size
-            if avg_kl >= target_kl * num_batches:
-                early_stop = True
-                break
-
-        if early_stop:
-            # Add message here ig if needed
-            break
-
-    # Filling out replay buffer
-    with torch.no_grad():
-        policy_logits = policy.get_policy_masked_logits(flat_obs, flat_act, flat_masks)
-
-    obs_cpu = flat_obs.detach().cpu()
-    act_cpu = flat_act.detach().cpu()
-    mask_cpu = flat_masks.detach().cpu()
-    ret_cpu = flat_ret.detach().cpu()
-    logits_cpu = policy_logits.detach().to(torch.float16).cpu()
-
-    for t in range(sz):
-        replay_buffer.append(
-            {
-                "obs": obs_cpu[t],
-                "action": act_cpu[t],
-                "action_mask": mask_cpu[t],
-                "returns": ret_cpu[t],
-                "old_policy_logits": logits_cpu[t],
-            }
-        )
-
-    return rewards_list.sum().item()
-
-
-def auxiliary_phase():
-    if len(replay_buffer) < batch_size:
-        return
-
-    # TODO: fetch entire rollouts from buffer instead of random batches
-    for _ in range(n_aux_epochs):
-        indices = np.random.choice(len(replay_buffer), batch_size, replace=False)
-        batch = [replay_buffer[i] for i in indices]
-
-        obs_batch = torch.stack([b["obs"] for b in batch]).to(policy.device)
-        act_batch = torch.stack([b["action"] for b in batch]).to(policy.device)
-        mask_batch = torch.stack([b["action_mask"] for b in batch]).to(policy.device)
-        returns_batch = torch.stack([b["returns"] for b in batch]).to(policy.device)
-        old_logits_batch = torch.stack([b["old_policy_logits"] for b in batch]).to(policy.device)
-
-        # Auxiliary value loss (aux head)
-        aux_values = policy.get_aux_value(obs_batch)
-        aux_value_loss = F.mse_loss(aux_values.squeeze(-1), returns_batch)
-
-        # KL divergence loss KL(old || new)
-        current_logits = policy.get_policy_masked_logits(obs_batch, act_batch, mask_batch)
-        old_logp = old_logits_batch.to(torch.float32).log_softmax(dim=-1)
-        new_logp = current_logits.to(torch.float32).log_softmax(dim=-1)
-
-        kl_loss = F.kl_div(
-            new_logp.reshape(-1, ACT_SIZE),  # y_pred
-            old_logp.reshape(-1, ACT_SIZE),  # y_true
-            reduction="batchmean",
-            log_target=True,
-        )
-
-        joint_loss = aux_value_loss + beta_clone * kl_loss
-
-        optimizer.zero_grad(set_to_none=True)
-        joint_loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        optimizer.step()
-
-        # Additional value head training
-        _, _, _, values = policy(obs_batch, mask_batch, sample_actions=False)
-        value_loss = F.mse_loss(values.squeeze(-1), returns_batch)
-
-        optimizer.zero_grad(set_to_none=True)
-        value_loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        optimizer.step()
-
-
 def main():
-    start_episode = load_checkpoint("./checkpoints/checkpoint_latest.pt") or 0
-    for episode in range(start_episode, num_episodes):
-        # Policy phase
-        avg_rew = 0
-        for _ in range(n_policy_iterations):
-            avg_rew += policy_phase()
-        avg_rew /= n_policy_iterations
-
-        # Auxiliary phase
-        auxiliary_phase()
-
-        print(
-            f"Episode {episode + 1}/{num_episodes}, reward: {avg_rew:.3f}, buffer: {len(replay_buffer)}"
-        )
-
-        if (episode + 1) % 10 == 0:
-            save_checkpoint(f"./checkpoints/checkpoint_{episode + 1}.pt", episode)
-            save_checkpoint("./checkpoints/checkpoint_latest.pt", episode)
-            print(f"Checkpoint saved at episode {episode + 1}")
+    pass
 
 
 if __name__ == "__main__":
