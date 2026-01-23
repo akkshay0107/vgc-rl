@@ -20,6 +20,7 @@ dependencies = [
     "certifi",
     "pettingzoo",
     "transformers[torch]>=4.57.1",
+    "peft>=0.18.1",
 ]
 
 [tool.pyright]

@@ -11,7 +11,6 @@ from env import SimEnv
 from observation_builder import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 
-# PPG Hyperparameters
 num_episodes = 1000
 gamma = 0.95  # avg vgc game length = 8 turns (0.95)^8 ~ 0.66
 gae_lambda = 0.95

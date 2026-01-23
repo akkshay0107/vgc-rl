@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.init as init
+from peft import LoraConfig, get_peft_model
 from torch.distributions import Categorical
 from transformers import BatchEncoding, BertModel
 
@@ -33,8 +34,6 @@ class ActorHead(nn.Module):
         self.policy_head = nn.Linear(net_arch[-1], 2 * act_size)
         # outputs scalar value from the state V(s)
         self.value_head = nn.Linear(net_arch[-1], 1)
-        # auxiliary value head for PPG
-        self.aux_value_head = nn.Linear(net_arch[-1], 1)
 
         self.to(self.device)
         self._init_weights()
@@ -49,9 +48,6 @@ class ActorHead(nn.Module):
 
         init.orthogonal_(self.value_head.weight, gain=1.0)
         init.zeros_(self.value_head.bias)
-
-        init.orthogonal_(self.aux_value_head.weight, gain=1.0)
-        init.zeros_(self.aux_value_head.bias)
 
         for module in self.shared_backbone:
             if isinstance(module, nn.Linear):
@@ -103,13 +99,6 @@ class ActorHead(nn.Module):
             value,
         )
 
-    def get_aux_value(self, obs: torch.Tensor) -> torch.Tensor:
-        if obs.dim() == 2:
-            obs = obs.unsqueeze(0)
-        z = self.reducer(obs)
-        x = self.shared_backbone(z)
-        return self.aux_value_head(x)
-
     def _apply_masks(self, logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
         # Replace logits of illegal actions with -inf so they have zero probability
         mask = action_mask == 0
@@ -158,7 +147,21 @@ class PolicyNet(nn.Module):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.base_model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+        lora_config = LoraConfig(
+            r=8,  # rank
+            lora_alpha=8,
+            target_modules=[
+                "query",
+                "value",
+            ],
+            lora_dropout=0.1,
+            bias="none",
+        )
+
+        base_model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+
+        self.base_model = get_peft_model(base_model, lora_config)
+
         self.actor_head = ActorHead(
             obs_dim=obs_dim,
             act_size=act_size,
@@ -233,9 +236,6 @@ class PolicyNet(nn.Module):
         entropy = entropy1 + entropy2
 
         return log_prob, entropy, value
-
-    def get_aux_value(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.actor_head.get_aux_value(obs)
 
     def batch_forward(
         self,
