@@ -13,7 +13,7 @@ from policy import PolicyNet
 # Hyperparameters
 num_episodes = 1000
 gamma = 0.95
-gae_lambda = 0.95
+gae_lambda = 0.98  # sparse reward counteraction
 lr = 1e-4
 batch_size = 2  # for testing (since my cpu doesnt have enough memory), increase it later
 clip_range = 0.2
@@ -25,7 +25,13 @@ ppo_epochs = 4
 n_jobs = 4
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
-optimizer = optim.Adafactor(policy.parameters(), lr=lr)
+optimizer = optim.Adam(
+    [
+        {"params": policy.base_model.parameters(), "lr": 1e-5},
+        {"params": policy.actor_head.parameters(), "lr": lr},
+    ],
+    eps=1e-5,
+)
 
 
 def save_checkpoint(path, episode):
@@ -122,67 +128,97 @@ def collect_rollout(env):
 
 
 def ppo_update(rollout_data):
-    obs_data = rollout_data["obs"]
-    actions_data = rollout_data["actions"]
-    log_probs_data = rollout_data["log_probs"]
-    advantages_data = rollout_data["advantages"]
-    returns_data = rollout_data["returns"]
-    action_masks_data = rollout_data["action_masks"]
+    observations = rollout_data["obs"]
+    actions = rollout_data["actions"]
+    old_log_probs = rollout_data["log_probs"]
+    advantages = rollout_data["advantages"]
+    returns = rollout_data["returns"]
+    action_masks = rollout_data["action_masks"]
 
-    advantages_data = (advantages_data - advantages_data.mean()) / (advantages_data.std() + 1e-8)
+    n_samples = len(observations)
 
-    policy_losses, value_losses, entropy_losses, approx_kl_divs = [], [], [], []
+    # overall metrics
+    tot_avg_policy_loss = 0.0
+    tot_avg_value_loss = 0.0
+    tot_avg_entropy_loss = 0.0
+    tot_avg_kl_div = 0.0
+    epochs_done = 0
 
-    for _ in range(ppo_epochs):
-        indices = np.random.permutation(len(obs_data))
-        for start in range(0, len(obs_data), batch_size):
-            end = start + batch_size
-            mb_indices = indices[start:end]
+    for epoch_idx in range(ppo_epochs):
+        # per epoch stats
+        avg_policy_loss = 0.0
+        avg_value_loss = 0.0
+        avg_entropy_loss = 0.0
+        avg_kl_div = 0.0
 
-            mb_obs_list = [obs_data[i] for i in mb_indices]
-            mb_actions = actions_data[mb_indices].to(policy.device)
-            mb_action_masks = action_masks_data[mb_indices].to(policy.device)
+        minibatch_indices = np.random.permutation(n_samples)
+
+        for minibatch_start in range(0, n_samples, batch_size):
+            minibatch_end = minibatch_start + batch_size
+            mb_idx = minibatch_indices[minibatch_start:minibatch_end]
+
+            mb_observations = [observations[i] for i in mb_idx]
+            mb_actions = actions[mb_idx].to(policy.device)
+            mb_old_log_probs = old_log_probs[mb_idx].to(policy.device)
+            mb_advantages = advantages[mb_idx].to(policy.device)
+            mb_returns = returns[mb_idx].to(policy.device)
+            mb_action_masks = action_masks[mb_idx].to(policy.device)
 
             new_log_probs, entropy, new_values = policy.evaluate_actions(
-                mb_obs_list, mb_actions, mb_action_masks
+                mb_observations, mb_actions, mb_action_masks
             )
 
-            mb_advantages = advantages_data[mb_indices].to(policy.device)
-            mb_old_log_probs = log_probs_data[mb_indices].to(policy.device)
             log_ratio = new_log_probs - mb_old_log_probs
             ratio = torch.exp(log_ratio)
-            policy_loss1 = mb_advantages * ratio
-            policy_loss2 = mb_advantages * torch.clamp(ratio, 1 - clip_range, 1 + clip_range)
-            policy_loss = -torch.min(policy_loss1, policy_loss2).mean()
 
-            mb_returns = returns_data[mb_indices].to(policy.device)
+            policy_loss_unclipped = mb_advantages * ratio
+            policy_loss_clipped = mb_advantages * torch.clamp(
+                ratio, 1.0 - clip_range, 1.0 + clip_range
+            )
+
+            policy_loss = -torch.min(policy_loss_unclipped, policy_loss_clipped).mean()
             value_loss = F.mse_loss(new_values, mb_returns)
-
             entropy_loss = -entropy.mean()
 
-            loss = policy_loss + value_coef * value_loss - entropy_coef * entropy_loss
+            total_loss = policy_loss + value_coef * value_loss + entropy_coef * entropy_loss
 
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
             optimizer.step()
 
-            policy_losses.append(policy_loss.item())
-            value_losses.append(value_loss.item())
-            entropy_losses.append(entropy_loss.item())
             with torch.no_grad():
-                approx_kl = ((ratio - 1) - log_ratio).mean().cpu().numpy()
-            approx_kl_divs.append(approx_kl)
+                kl = (mb_old_log_probs - new_log_probs).mean().item()
 
-        if np.mean(approx_kl_divs) > target_kl:
-            print(f"Early stopping at epoch due to high KL divergence: {np.mean(approx_kl_divs)}")
+            avg_policy_loss += policy_loss.item()
+            avg_value_loss += value_loss.item()
+            avg_entropy_loss += entropy_loss.item()
+            avg_kl_div += kl
+
+        num_mb = (n_samples + batch_size - 1) // batch_size
+        epochs_done += 1
+
+        avg_policy_loss /= num_mb
+        avg_value_loss /= num_mb
+        avg_entropy_loss /= num_mb
+        avg_kl_div /= num_mb
+
+        tot_avg_policy_loss += avg_policy_loss
+        tot_avg_value_loss += avg_value_loss
+        tot_avg_entropy_loss += avg_entropy_loss
+        tot_avg_kl_div += avg_kl_div
+
+        if avg_kl_div > target_kl:
+            print(
+                f"Early stop at epoch {epoch_idx + 1}/{ppo_epochs} (KL={avg_kl_div} > {target_kl})"
+            )
             break
 
     return {
-        "policy_loss": np.mean(policy_losses),
-        "value_loss": np.mean(value_losses),
-        "entropy_loss": np.mean(entropy_losses),
-        "approx_kl": np.mean(approx_kl_divs),
+        "policy_loss": tot_avg_policy_loss / epochs_done,
+        "value_loss": tot_avg_value_loss / epochs_done,
+        "entropy_loss": tot_avg_entropy_loss / epochs_done,
+        "kl_divergence": tot_avg_kl_div / epochs_done,
     }
 
 
@@ -203,6 +239,9 @@ def main():
         values = torch.stack([d["values"] for d in rollout_data])
         dones = torch.stack([d["dones"] for d in rollout_data])
         advantages, returns = compute_gae(rewards, values, dones)
+
+        # normalize advantages before ppo update
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         T, B = rewards.shape
         flat_obs = [obs for d in rollout_data for obs in d["obs"]]
@@ -228,7 +267,7 @@ def main():
         print(f"  Policy Loss: {stats['policy_loss']:.4f}")
         print(f"  Value Loss: {stats['value_loss']:.4f}")
         print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
-        print(f"  Approx KL: {stats['approx_kl']:.4f}")
+        print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
         print("=" * 60)
 
         if (episode + 1) % 50 == 0:
