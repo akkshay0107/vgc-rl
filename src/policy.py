@@ -176,7 +176,7 @@ class PolicyNet(nn.Module):
         last_hidden = outputs.last_hidden_state  # (26, seq_len, 312)
         cls_emb = last_hidden[:, 0, :]  # (26, 312)
         # Exclude padding tokens for mean pooling
-        mask = torch.tensor(tokens["attention_mask"]).unsqueeze(-1)  # (26, seq_len, 1)
+        mask = tokens["attention_mask"].unsqueeze(-1)  # type: ignore
         masked_hidden = last_hidden * mask
         sum_hidden = masked_hidden.sum(dim=1)
         len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
@@ -199,6 +199,16 @@ class PolicyNet(nn.Module):
         processed_obs = self.assemble_input(obs).to(self.device)
         return self.actor_head(processed_obs, action_mask, sample_actions)
 
+    def batch_forward(
+        self,
+        obs: list[BattleObservation],
+        action_mask: torch.Tensor | None,
+        sample_actions: bool = True,
+    ):
+        input_slices = [self.assemble_input(o).unsqueeze(0) for o in obs]
+        batch_input = torch.cat(input_slices, dim=0).to(self.device)
+        return self.actor_head(batch_input, action_mask, sample_actions)
+
     def get_policy_masked_logits(
         self, obs: BattleObservation, action_taken: torch.Tensor, action_mask: torch.Tensor | None
     ):
@@ -214,9 +224,12 @@ class PolicyNet(nn.Module):
         return logits
 
     def evaluate_actions(
-        self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
+        self,
+        obs: list[BattleObservation],
+        actions: torch.Tensor,
+        action_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        policy_logits, _, _, value = self.actor_head(obs, action_mask, sample_actions=False)
+        policy_logits, _, _, value = self.batch_forward(obs, action_mask, sample_actions=False)
 
         if action_mask is not None:
             logits = self.actor_head._apply_masks(policy_logits, action_mask)
@@ -236,13 +249,3 @@ class PolicyNet(nn.Module):
         entropy = entropy1 + entropy2
 
         return log_prob, entropy, value
-
-    def batch_forward(
-        self,
-        obs: list[BattleObservation],
-        action_mask: torch.Tensor | None,
-        sample_actions: bool = True,
-    ):
-        input_slices = [self.assemble_input(o).unsqueeze(0) for o in obs]
-        batch_input = torch.cat(input_slices, dim=0).to(self.device)
-        return self.actor_head(batch_input, action_mask, sample_actions)
