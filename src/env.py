@@ -22,7 +22,7 @@ from poke_env.ps_client import (
 )
 from poke_env.teambuilder import Teambuilder
 
-from encoder import Encoder
+import observation_builder
 from teams import RandomTeamFromPool
 
 
@@ -351,4 +351,4 @@ class SimEnv(Gen9VGCEnv):
 
     def embed_battle(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        return Encoder.encode_battle_state(battle)
+        return observation_builder.from_battle(battle)

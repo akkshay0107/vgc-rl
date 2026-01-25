@@ -7,7 +7,7 @@ from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import DefaultBattleOrder, MaxBasePowerPlayer, Player, RandomPlayer
 from torch.distributions import Categorical
 
-from encoder import ACT_SIZE, OBS_DIM, Encoder
+import observation_builder
 from env import Gen9VGCEnv
 from policy import PolicyNet
 from teampreview import TeamPreviewHandler
@@ -48,17 +48,14 @@ class RLPlayer(Player):
         return sorted_logits.scatter(-1, sorted_indices, sorted_logits)
 
     def _top_p(self, obs, action_mask):
-        B = obs.shape[0]
-        z = self.policy.reducer(obs)
-        x = self.policy.shared_backbone(z)
-        policy_logits = self.policy.policy_head(x).reshape(B, 2, self.policy.act_size)
-        logits = self.policy._apply_masks(policy_logits, action_mask)
+        policy_logits, _, _, _ = self.policy(obs, action_mask, sample_actions=False)
+        logits = self.policy.actor_head._apply_masks(policy_logits, action_mask)
 
         p1_logits = self._apply_top_p(logits[:, 0])
         cat1 = Categorical(logits=p1_logits)
         action1 = cat1.sample()  # (B,)
 
-        logits = self.policy._apply_sequential_masks(logits, action1, action_mask)
+        logits = self.policy.actor_head._apply_sequential_masks(logits, action1, action_mask)
         p2_logits = self._apply_top_p(logits[:, 1])
         cat2 = Categorical(logits=p2_logits)
         action2 = cat2.sample()  # (B,)
@@ -67,11 +64,9 @@ class RLPlayer(Player):
 
     def _get_action(self, battle: AbstractBattle):
         obs = self.get_observation(battle)
-        action_mask = Encoder.get_action_mask(battle)
+        action_mask = observation_builder.get_action_mask(battle)
         with torch.no_grad():
-            obs_tensor = torch.as_tensor(obs, device=self.policy.device).unsqueeze(0)
-            action_mask_tensor = action_mask.unsqueeze(0)
-            actions = self._top_p(obs_tensor, action_mask_tensor)
+            actions = self._top_p(obs, action_mask.unsqueeze(0))
         return actions[0].cpu().numpy()
 
     def choose_move(self, battle: AbstractBattle):
@@ -82,7 +77,7 @@ class RLPlayer(Player):
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        return Encoder.encode_battle_state(battle)
+        return observation_builder.from_battle(battle)
 
     def teampreview(self, battle: AbstractBattle) -> str:
         return self.teampreview_handler.select_team(battle)
@@ -99,7 +94,7 @@ async def main():
     checkpoint_path = "PUT CHECKPOINT PATH HERE"
     checkpoint = torch.load(checkpoint_path)
 
-    policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
+    policy = PolicyNet()
     policy.load_state_dict(checkpoint["model_state_dict"])
 
     tp_handler = TeamPreviewHandler()

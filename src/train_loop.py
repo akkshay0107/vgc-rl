@@ -1,37 +1,35 @@
 import os
-from collections import deque
+import time
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from encoder import ACT_SIZE, OBS_DIM, Encoder
+import observation_builder
 from env import SimEnv
+from observation_builder import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 
-# PPG Hyperparameters
-num_episodes = 100  # num of times entire loop (PPO + Aux phase) takes place
-gamma = 0.95  # avg vgc game length = 8 turns (0.95)^8 ~ 0.66
-gae_lambda = 0.95
+# Hyperparameters
+num_episodes = 1000
+gamma = 0.95
+gae_lambda = 0.98  # sparse reward counteraction
 lr = 1e-4
-n_policy_iterations = 32  # Number of PPO iters before the Aux phase
-n_aux_epochs = 6  # Number of minibatches sampled in the Aux phase
-ppo_epochs = 1  # Number of minibatches sampled per PPO iter
 batch_size = 64
 clip_range = 0.2
 entropy_coef = 0.01
 value_coef = 0.5
-beta_clone = 1.0  # weight given to KL divergence term for Aux phase
 max_grad_norm = 0.5
-target_kl = 0.015  # for early KL stopping
+target_kl = 0.015
+ppo_epochs = 4
+n_jobs = 4
 
-env = SimEnv.build_env()
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
-optimizer = optim.Adam(policy.parameters(), lr=lr)
+optimizer = optim.AdamW(policy.parameters(), lr=lr, eps=1e-5)
 
-rollout_buffer = []
-replay_buffer = deque(maxlen=10000)
+if policy.device.type == "cuda":
+    policy.compile()
 
 
 def save_checkpoint(path, episode):
@@ -60,17 +58,19 @@ def compute_gae(rewards, values, dones, gamma=gamma, gae_lambda=gae_lambda):
     gae = torch.zeros(B, dtype=torch.float32, device=rewards.device)
 
     for t in reversed(range(T)):
-        next_val = torch.zeros_like(values[t]) if t == T - 1 else values[t + 1]  # (B,)
-        mask = 1.0 - dones[t]  # (B,)
-        delta = rewards[t] + gamma * next_val * mask - values[t]  # (B,)
-        gae = delta + gamma * gae_lambda * mask * gae  # (B,)
+        next_val = torch.zeros_like(values[t]) if t == T - 1 else values[t + 1]
+        mask = 1.0 - dones[t]
+        delta = rewards[t] + gamma * next_val * mask - values[t]
+        gae = delta + gamma * gae_lambda * mask * gae
         advantages[t] = gae
 
     returns = advantages + values
     return advantages, returns
 
 
-def collect_rollout():
+def collect_rollout(env):
+    policy.eval()
+
     obs, _ = env.reset()
     episode_data = []
 
@@ -78,16 +78,16 @@ def collect_rollout():
         obs_agent1 = obs[env.agent1.username]
         obs_agent2 = obs[env.agent2.username]
 
-        action_mask_agent1 = Encoder.get_action_mask(env.battle1)  # type: ignore
-        action_mask_agent2 = Encoder.get_action_mask(env.battle2)  # type: ignore
+        action_mask_agent1 = observation_builder.get_action_mask(env.battle1)
+        action_mask_agent2 = observation_builder.get_action_mask(env.battle2)
 
-        obs_batch = torch.stack([obs_agent1, obs_agent2], dim=0).to(policy.device)  # (2, ...)
+        obs_batch = torch.stack([obs_agent1, obs_agent2], dim=0).to(policy.device)
         action_mask_batch = torch.stack([action_mask_agent1, action_mask_agent2], dim=0).to(
             policy.device
         )
 
         with torch.no_grad():
-            logits, log_probs, sampled_actions, values = policy(obs_batch, action_mask_batch)
+            _, log_probs, sampled_actions, values = policy(obs_batch, action_mask_batch)
 
         assert sampled_actions is not None and log_probs is not None
         action1_np = sampled_actions[0].cpu().numpy()
@@ -102,21 +102,18 @@ def collect_rollout():
         done1 = terminated[env.agent1.username] or truncated[env.agent1.username]
         done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
 
-        # each batch contains both player and opponents perspective
         episode_data.append(
             {
                 "obs": obs_batch,
                 "actions": sampled_actions,
                 "log_probs": log_probs,
-                "values": values,  # (2,)
+                "values": values,
                 "rewards": torch.tensor(
                     [rewards[env.agent1.username], rewards[env.agent2.username]],
                     dtype=torch.float32,
                     device=policy.device,
-                ),  # (2,)
-                "dones": torch.tensor(
-                    [done1, done2], dtype=torch.float32, device=policy.device
-                ),  # (2,)
+                ),
+                "dones": torch.tensor([done1, done2], dtype=torch.float32, device=policy.device),
                 "action_masks": action_mask_batch,
             }
         )
@@ -128,184 +125,160 @@ def collect_rollout():
     return episode_data
 
 
-# TODO: parallelize the policy phase
-def policy_phase():
-    episode_data = collect_rollout()
+def ppo_update(rollout_data):
+    policy.train()
+    t0 = time.time()
 
-    def flat_collect(by):
-        res = torch.stack([d[by] for d in episode_data])
-        if len(res.shape) <= 2:
-            return res.reshape(-1)
-        return res.reshape(-1, *res.shape[2:])
+    observations = rollout_data["obs"]
+    actions = rollout_data["actions"]
+    old_log_probs = rollout_data["log_probs"]
+    advantages = rollout_data["advantages"]
+    returns = rollout_data["returns"]
+    action_masks = rollout_data["action_masks"]
 
-    # all below of shape (turns, 2, *)
-    values_list = torch.stack([d["values"] for d in episode_data])
-    rewards_list = torch.stack([d["rewards"] for d in episode_data])
-    dones_list = torch.stack([d["dones"] for d in episode_data])
+    n_samples = len(observations)
 
-    advantages, returns = compute_gae(
-        rewards=rewards_list,
-        values=values_list,
-        dones=dones_list,
-    )  # advantages, returns: (turns, 2)
+    # overall metrics
+    tot_avg_policy_loss = 0.0
+    tot_avg_value_loss = 0.0
+    tot_avg_entropy_loss = 0.0
+    tot_avg_kl_div = 0.0
+    epochs_done = 0
 
-    # Normalize advantages
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    for epoch_idx in range(ppo_epochs):
+        # per epoch stats
+        avg_policy_loss = 0.0
+        avg_value_loss = 0.0
+        avg_entropy_loss = 0.0
+        avg_kl_div = 0.0
 
-    flat_obs = flat_collect("obs")
-    flat_act = flat_collect("actions")
-    flat_masks = flat_collect("action_masks")
-    flat_old_log_prob = flat_collect("log_probs")
-    flat_old_values = flat_collect("values")
-    flat_adv = advantages.reshape(-1)
-    flat_ret = returns.reshape(-1)
+        minibatch_indices = np.random.permutation(n_samples)
 
-    # Sample minibatches and train on minibatch
-    sz = flat_obs.shape[0]
-    for _ in range(ppo_epochs):
-        early_stop = False
-        avg_kl = 0.0
-        indices = torch.randperm(sz, device=policy.device)
-        for start in range(0, sz, batch_size):
-            minibatch = indices[start : start + batch_size]
-            mb_obs = flat_obs[minibatch]
-            mb_act = flat_act[minibatch]
-            mb_old_log_prob = flat_old_log_prob[minibatch]
-            mb_old_values = flat_old_values[minibatch]
-            mb_mask = flat_masks[minibatch]
-            mb_adv = flat_adv[minibatch]
-            mb_ret = flat_ret[minibatch]
+        for minibatch_start in range(0, n_samples, batch_size):
+            minibatch_end = minibatch_start + batch_size
+            mb_idx = minibatch_indices[minibatch_start:minibatch_end]
 
-            new_log_prob, entropy, values = policy.evaluate_actions(
-                mb_obs, mb_act, mb_mask
-            )  # add entropy term later
+            mb_observations = observations[mb_idx].to(policy.device)
+            mb_actions = actions[mb_idx].to(policy.device)
+            mb_old_log_probs = old_log_probs[mb_idx].to(policy.device)
+            mb_advantages = advantages[mb_idx].to(policy.device)
+            mb_returns = returns[mb_idx].to(policy.device)
+            mb_action_masks = action_masks[mb_idx].to(policy.device)
 
-            kl = (new_log_prob - mb_old_log_prob).mean()
-
-            ratio = (new_log_prob - mb_old_log_prob).exp()
-            surr1 = ratio * mb_adv
-            surr2 = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * mb_adv
-            policy_loss = -torch.min(surr1, surr2).mean()  # maximize clip objective
-
-            values = values.squeeze(-1)
-            values_clipped = mb_old_values + torch.clamp(
-                values - mb_old_values, -clip_range, clip_range
+            new_log_probs, entropy, new_values = policy.evaluate_actions(
+                mb_observations, mb_actions, mb_action_masks
             )
-            value_loss_unclipped = F.mse_loss(values, mb_ret, reduction="none")
-            value_loss_clipped = F.mse_loss(values_clipped, mb_ret, reduction="none")
-            value_loss = torch.max(value_loss_unclipped, value_loss_clipped).mean()
 
-            joint_loss = (
-                policy_loss + value_coef * value_loss - entropy_coef * entropy.mean()
-            )  # -ve for entropy since we want to maximize entropy term
+            log_ratio = new_log_probs - mb_old_log_probs
+            ratio = torch.exp(log_ratio)
 
-            optimizer.zero_grad(set_to_none=True)
-            joint_loss.backward()
+            policy_loss_unclipped = mb_advantages * ratio
+            policy_loss_clipped = mb_advantages * torch.clamp(
+                ratio, 1.0 - clip_range, 1.0 + clip_range
+            )
+
+            policy_loss = -torch.min(policy_loss_unclipped, policy_loss_clipped).mean()
+            value_loss = F.mse_loss(new_values, mb_returns)
+            entropy_loss = -entropy.mean()
+
+            total_loss = policy_loss + value_coef * value_loss + entropy_coef * entropy_loss
+
+            optimizer.zero_grad()
+            total_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
             optimizer.step()
 
-            avg_kl += kl.item()
-            num_batches = 1 + start / batch_size
-            if avg_kl >= target_kl * num_batches:
-                early_stop = True
-                break
+            with torch.no_grad():
+                kl = (mb_old_log_probs - new_log_probs).mean().item()
 
-        if early_stop:
-            # Add message here ig if needed
+            avg_policy_loss += policy_loss.item()
+            avg_value_loss += value_loss.item()
+            avg_entropy_loss += entropy_loss.item()
+            avg_kl_div += kl
+
+        num_mb = (n_samples + batch_size - 1) // batch_size
+        epochs_done += 1
+
+        avg_policy_loss /= num_mb
+        avg_value_loss /= num_mb
+        avg_entropy_loss /= num_mb
+        avg_kl_div /= num_mb
+
+        tot_avg_policy_loss += avg_policy_loss
+        tot_avg_value_loss += avg_value_loss
+        tot_avg_entropy_loss += avg_entropy_loss
+        tot_avg_kl_div += avg_kl_div
+
+        if avg_kl_div > target_kl:
+            print(
+                f"Early stop at epoch {epoch_idx + 1}/{ppo_epochs} (KL={avg_kl_div} > {target_kl})"
+            )
             break
 
-    # Filling out replay buffer
-    with torch.no_grad():
-        policy_logits = policy.get_policy_masked_logits(flat_obs, flat_act, flat_masks)
+    t1 = time.time()
 
-    obs_cpu = flat_obs.detach().cpu()
-    act_cpu = flat_act.detach().cpu()
-    mask_cpu = flat_masks.detach().cpu()
-    ret_cpu = flat_ret.detach().cpu()
-    logits_cpu = policy_logits.detach().to(torch.float16).cpu()
-
-    for t in range(sz):
-        replay_buffer.append(
-            {
-                "obs": obs_cpu[t],
-                "action": act_cpu[t],
-                "action_mask": mask_cpu[t],
-                "returns": ret_cpu[t],
-                "old_policy_logits": logits_cpu[t],
-            }
-        )
-
-    return rewards_list.sum().item()
-
-
-def auxiliary_phase():
-    if len(replay_buffer) < batch_size:
-        return
-
-    # TODO: fetch entire rollouts from buffer instead of random batches
-    for _ in range(n_aux_epochs):
-        indices = np.random.choice(len(replay_buffer), batch_size, replace=False)
-        batch = [replay_buffer[i] for i in indices]
-
-        obs_batch = torch.stack([b["obs"] for b in batch]).to(policy.device)
-        act_batch = torch.stack([b["action"] for b in batch]).to(policy.device)
-        mask_batch = torch.stack([b["action_mask"] for b in batch]).to(policy.device)
-        returns_batch = torch.stack([b["returns"] for b in batch]).to(policy.device)
-        old_logits_batch = torch.stack([b["old_policy_logits"] for b in batch]).to(policy.device)
-
-        # Auxiliary value loss (aux head)
-        aux_values = policy.get_aux_value(obs_batch)
-        aux_value_loss = F.mse_loss(aux_values.squeeze(-1), returns_batch)
-
-        # KL divergence loss KL(old || new)
-        current_logits = policy.get_policy_masked_logits(obs_batch, act_batch, mask_batch)
-        old_logp = old_logits_batch.to(torch.float32).log_softmax(dim=-1)
-        new_logp = current_logits.to(torch.float32).log_softmax(dim=-1)
-
-        kl_loss = F.kl_div(
-            new_logp.reshape(-1, ACT_SIZE),  # y_pred
-            old_logp.reshape(-1, ACT_SIZE),  # y_true
-            reduction="batchmean",
-            log_target=True,
-        )
-
-        joint_loss = aux_value_loss + beta_clone * kl_loss
-
-        optimizer.zero_grad(set_to_none=True)
-        joint_loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        optimizer.step()
-
-        # Additional value head training
-        _, _, _, values = policy(obs_batch, mask_batch, sample_actions=False)
-        value_loss = F.mse_loss(values.squeeze(-1), returns_batch)
-
-        optimizer.zero_grad(set_to_none=True)
-        value_loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-        optimizer.step()
+    return {
+        "policy_loss": tot_avg_policy_loss / epochs_done,
+        "value_loss": tot_avg_value_loss / epochs_done,
+        "entropy_loss": tot_avg_entropy_loss / epochs_done,
+        "kl_divergence": tot_avg_kl_div / epochs_done,
+        "time": t1 - t0,
+    }
 
 
 def main():
-    start_episode = load_checkpoint("./checkpoints/checkpoint_latest.pt") or 0
-    for episode in range(start_episode, num_episodes):
-        # Policy phase
-        avg_rew = 0
-        for _ in range(n_policy_iterations):
-            avg_rew += policy_phase()
-        avg_rew /= n_policy_iterations
+    checkpoint_path = "ppo_checkpoint.pt"
+    env = SimEnv.build_env()
 
-        # Auxiliary phase
-        auxiliary_phase()
+    start = load_checkpoint(checkpoint_path) or 0
+    print(f"Starting training from episode {start + 1}")
+    for episode in range(start, num_episodes):
+        print(f"Collecting rollout for episode {episode + 1}...")
 
-        print(
-            f"Episode {episode + 1}/{num_episodes}, reward: {avg_rew:.3f}, buffer: {len(replay_buffer)}"
+        rollout_data = []
+        for _ in range(n_jobs):
+            rollout_data.extend(collect_rollout(env))  # should be in parallel
+
+        rewards = torch.stack([d["rewards"] for d in rollout_data])
+        values = torch.stack([d["values"] for d in rollout_data])
+        dones = torch.stack([d["dones"] for d in rollout_data])
+        advantages, returns = compute_gae(rewards, values, dones)
+
+        # normalize advantages before ppo update
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        T, B = rewards.shape
+        flat_obs = torch.stack([d["obs"] for d in rollout_data]).reshape(T * B, *OBS_DIM)
+        flat_actions = torch.stack([d["actions"] for d in rollout_data]).reshape(T * B, 2)
+        flat_log_probs = torch.stack([d["log_probs"] for d in rollout_data]).reshape(-1)
+        flat_action_masks = torch.stack([d["action_masks"] for d in rollout_data]).reshape(
+            T * B, 2, ACT_SIZE
         )
 
-        if (episode + 1) % 10 == 0:
-            save_checkpoint(f"./checkpoints/checkpoint_{episode + 1}.pt", episode)
-            save_checkpoint("./checkpoints/checkpoint_latest.pt", episode)
-            print(f"Checkpoint saved at episode {episode + 1}")
+        processed_rollout_data = {
+            "obs": flat_obs,
+            "actions": flat_actions,
+            "log_probs": flat_log_probs,
+            "advantages": advantages.reshape(-1),
+            "returns": returns.reshape(-1),
+            "action_masks": flat_action_masks,
+        }
+
+        stats = ppo_update(processed_rollout_data)
+
+        print("=" * 60)
+        print(f"Episode {episode + 1}/{num_episodes}:")
+        print(f"  Policy Loss: {stats['policy_loss']:.4f}")
+        print(f"  Value Loss: {stats['value_loss']:.4f}")
+        print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
+        print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
+        print(f"  Time taken: {stats['time']:.4f} s")
+        print("=" * 60)
+
+        if (episode + 1) % 50 == 0:
+            print(f"Saving checkpoint at episode {episode + 1}")
+            save_checkpoint(checkpoint_path, episode + 1)
+            print("Checkpoint saved.")
 
 
 if __name__ == "__main__":

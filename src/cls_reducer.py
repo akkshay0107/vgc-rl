@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-# from policy import OBS_DIM (cant do this anymore due to circular imports)
+from observation_builder import OBS_DIM
 
 
 class CLSReducer(nn.Module):
@@ -13,23 +13,21 @@ class CLSReducer(nn.Module):
         self,
         seq_len: int,
         feat_dim: int,
-        d_model: int = 256,
+        d_model: int = 512,
         nhead: int = 8,
         nlayer: int = 3,
-        dim_feedforward: int = 1024,
-        dropout: float = 0.0,
-        emb_std: float = 0.02,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.05,
     ):
         super().__init__()
-        if seq_len != 38:
+        if seq_len != OBS_DIM[0]:
             raise ValueError(
-                "This CLSReducer assumes seq_len=38 (field + extra info + 12*(textA,textB,num))."
+                f"This CLSReducer assumes seq_len={OBS_DIM[0]} (field + extra info + 12*(textA,textB,num))."
             )
 
         self.seq_len = seq_len
         self.feat_dim = feat_dim
         self.d_model = d_model
-        self.emb_std = emb_std
 
         self.in_proj = nn.Linear(feat_dim, d_model)
 
@@ -58,7 +56,7 @@ class CLSReducer(nn.Module):
         self._init_weights()
 
     def _build_ids(self):
-        assert self.seq_len == 38
+        assert self.seq_len == OBS_DIM[0]
         type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
         type_ids[0] = self.CLS
         type_ids[1] = type_ids[2] = self.FIELD
@@ -86,9 +84,10 @@ class CLSReducer(nn.Module):
         init.orthogonal_(self.in_proj.weight, gain=1.0)
         init.zeros_(self.in_proj.bias)
 
-        init.normal_(self.cls, std=self.emb_std)
-        init.normal_(self.type_emb.weight, std=self.emb_std)
-        init.normal_(self.part_emb.weight, std=self.emb_std)
+        emb_gain = self.d_model**-0.5
+        init.normal_(self.cls, std=emb_gain)
+        init.normal_(self.type_emb.weight, std=emb_gain)
+        init.normal_(self.part_emb.weight, std=emb_gain)
 
         for p in self.encoder.parameters():
             if p.dim() > 1:

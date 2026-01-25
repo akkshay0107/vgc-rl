@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.init as init
+from encoder import ACT_SIZE, OBS_DIM
 from torch.distributions import Categorical
 
 from cls_reducer import CLSReducer
-from encoder import ACT_SIZE, OBS_DIM
 
 
 # Needs all inputs to be on the same device as the model
@@ -33,8 +33,6 @@ class PolicyNet(nn.Module):
         self.policy_head = nn.Linear(net_arch[-1], 2 * act_size)
         # outputs scalar value from the state V(s)
         self.value_head = nn.Linear(net_arch[-1], 1)
-        # auxillary value head
-        self.aux_value_head = nn.Linear(net_arch[-1], 1)
 
         self.to(self.device)
         self._init_weights()
@@ -44,14 +42,11 @@ class PolicyNet(nn.Module):
         # orthogonal initialization of the network
         gain_hidden = init.calculate_gain("relu")
 
-        init.orthogonal_(self.policy_head.weight, gain=0.01)
+        init.orthogonal_(self.policy_head.weight, gain=0.1)
         init.zeros_(self.policy_head.bias)
 
         init.orthogonal_(self.value_head.weight, gain=1.0)
         init.zeros_(self.value_head.bias)
-
-        init.orthogonal_(self.aux_value_head.weight, gain=1.0)
-        init.zeros_(self.aux_value_head.bias)
 
         for module in self.shared_backbone:
             if isinstance(module, nn.Linear):
@@ -63,7 +58,6 @@ class PolicyNet(nn.Module):
         obs: torch.Tensor,
         action_mask: torch.Tensor | None = None,
         sample_actions: bool = True,
-        use_aux_value: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor]:
         # Add batch dimension if missing
         if obs.dim() == 2:
@@ -78,9 +72,7 @@ class PolicyNet(nn.Module):
         x = self.shared_backbone(z)
 
         policy_logits = self.policy_head(x).reshape(B, 2, self.act_size)
-        value = (
-            self.aux_value_head(x).squeeze(-1) if use_aux_value else self.value_head(x).squeeze(-1)
-        )
+        value = self.value_head(x).squeeze(-1)
 
         # Return raw logits if no masking or sampling needed
         if not sample_actions or action_mask is None:
@@ -105,13 +97,6 @@ class PolicyNet(nn.Module):
             torch.stack([action1, action2], -1),
             value,
         )
-
-    def get_aux_value(self, obs: torch.Tensor) -> torch.Tensor:
-        if obs.dim() == 2:
-            obs = obs.unsqueeze(0)
-        z = self.reducer(obs)
-        x = self.shared_backbone(z)
-        return self.aux_value_head(x).squeeze(-1)
 
     def get_policy_masked_logits(
         self, obs: torch.Tensor, action_taken: torch.Tensor, action_mask: torch.Tensor | None
@@ -140,14 +125,12 @@ class PolicyNet(nn.Module):
 
         cat1 = Categorical(logits=logits[:, 0])
         cat2 = Categorical(logits=logits[:, 1])
+
         log_prob1 = cat1.log_prob(actions[:, 0])
         log_prob2 = cat2.log_prob(actions[:, 1])
         log_prob = log_prob1 + log_prob2
 
-        entropy1 = cat1.entropy()
-        entropy2 = cat2.entropy()
-        # entropy approximated as if action1 and action2 are independent
-        entropy = entropy1 + entropy2
+        entropy = cat1.entropy() + cat2.entropy()
 
         return log_prob, entropy, value
 

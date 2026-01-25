@@ -9,8 +9,9 @@ from poke_env import AccountConfiguration, LocalhostServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import DefaultBattleOrder, Player, SimpleHeuristicsPlayer
 
-from encoder import ACT_SIZE, Encoder
+import observation_builder
 from env import Gen9VGCEnv
+from observation_builder import ACT_SIZE
 from teams import RandomTeamFromPool
 
 _TARGET_NAME = {-2: "default", -1: "self", 0: "ally", 1: "opp1", 2: "opp2"}
@@ -87,8 +88,8 @@ class TerminalPlayer(Player):
         if battle._wait:
             return DefaultBattleOrder()
 
-        obs = self.get_observation(battle).detach().cpu()
-        action_mask = Encoder.get_action_mask(battle).detach().cpu()
+        obs = self.get_observation(battle)
+        action_mask = observation_builder.get_action_mask(battle).detach().cpu()
         print_valid_actions_from_mask(battle, action_mask)
 
         line = await asyncio.to_thread(input, "")
@@ -101,7 +102,7 @@ class TerminalPlayer(Player):
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
-        return Encoder.encode_battle_state(battle)
+        return observation_builder.from_battle(battle)
 
     def teampreview(self, battle: AbstractBattle) -> str:
         return super().random_teampreview(battle)
