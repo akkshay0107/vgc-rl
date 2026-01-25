@@ -1,3 +1,5 @@
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -43,7 +45,7 @@ class ActorHead(nn.Module):
         # orthogonal initialization of the network
         gain_hidden = init.calculate_gain("relu")
 
-        init.orthogonal_(self.policy_head.weight, gain=0.01)
+        init.orthogonal_(self.policy_head.weight, gain=0.1)
         init.zeros_(self.policy_head.bias)
 
         init.orthogonal_(self.value_head.weight, gain=1.0)
@@ -159,7 +161,6 @@ class PolicyNet(nn.Module):
         )
 
         base_model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
-
         self.base_model = get_peft_model(base_model, lora_config)
 
         self.actor_head = ActorHead(
@@ -192,25 +193,24 @@ class PolicyNet(nn.Module):
 
     def forward(
         self,
-        obs: BattleObservation,
-        action_mask: torch.Tensor | None = None,
-        sample_actions: bool = True,
-    ):
-        processed_obs = self.assemble_input(obs).to(self.device)
-        return self.actor_head(processed_obs, action_mask, sample_actions)
-
-    def batch_forward(
-        self,
         obs: list[BattleObservation],
         action_mask: torch.Tensor | None,
         sample_actions: bool = True,
     ):
+        # t0 = time.time()
         input_slices = [self.assemble_input(o).unsqueeze(0) for o in obs]
         batch_input = torch.cat(input_slices, dim=0).to(self.device)
-        return self.actor_head(batch_input, action_mask, sample_actions)
+        # t1 = time.time()
+        res = self.actor_head(batch_input, action_mask, sample_actions)
+        # t2 = time.time()
+        # print(f"BERT time = {t1 - t0}, Actor Head time = {t2 - t1}")
+        return res
 
     def get_policy_masked_logits(
-        self, obs: BattleObservation, action_taken: torch.Tensor, action_mask: torch.Tensor | None
+        self,
+        obs: list[BattleObservation],
+        action_taken: torch.Tensor,
+        action_mask: torch.Tensor | None,
     ):
         # returns policy probs in log space assuming the given action
         # returns log probs for the joint distribution
@@ -229,7 +229,7 @@ class PolicyNet(nn.Module):
         actions: torch.Tensor,
         action_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        policy_logits, _, _, value = self.batch_forward(obs, action_mask, sample_actions=False)
+        policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
 
         if action_mask is not None:
             logits = self.actor_head._apply_masks(policy_logits, action_mask)

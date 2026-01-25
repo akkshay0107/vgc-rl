@@ -1,4 +1,5 @@
 import os
+import time
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ num_episodes = 1000
 gamma = 0.95
 gae_lambda = 0.98  # sparse reward counteraction
 lr = 1e-4
-batch_size = 2  # for testing (since my cpu doesnt have enough memory), increase it later
+batch_size = 4  # for testing (since my cpu doesnt have enough memory), increase it later
 clip_range = 0.2
 entropy_coef = 0.01
 value_coef = 0.5
@@ -32,6 +33,9 @@ optimizer = optim.Adam(
     ],
     eps=1e-5,
 )
+
+if policy.device.type == "cuda":
+    policy.compile()
 
 
 def save_checkpoint(path, episode):
@@ -71,6 +75,9 @@ def compute_gae(rewards, values, dones, gamma=gamma, gae_lambda=gae_lambda):
 
 
 def collect_rollout(env):
+    policy.eval()
+    policy.base_model.gradient_checkpointing_disable()  # type: ignore
+
     obs, _ = env.reset()
     episode_data = []
 
@@ -87,9 +94,7 @@ def collect_rollout(env):
         )
 
         with torch.no_grad():
-            _, log_probs, sampled_actions, values = policy.batch_forward(
-                obs_batch, action_mask_batch
-            )
+            _, log_probs, sampled_actions, values = policy(obs_batch, action_mask_batch)
 
         assert sampled_actions is not None and log_probs is not None
         action1_np = sampled_actions[0].cpu().numpy()
@@ -128,6 +133,11 @@ def collect_rollout(env):
 
 
 def ppo_update(rollout_data):
+    policy.train()
+    policy.base_model.gradient_checkpointing_enable()  # type: ignore
+
+    t0 = time.time()
+
     observations = rollout_data["obs"]
     actions = rollout_data["actions"]
     old_log_probs = rollout_data["log_probs"]
@@ -214,11 +224,14 @@ def ppo_update(rollout_data):
             )
             break
 
+    t1 = time.time()
+
     return {
         "policy_loss": tot_avg_policy_loss / epochs_done,
         "value_loss": tot_avg_value_loss / epochs_done,
         "entropy_loss": tot_avg_entropy_loss / epochs_done,
         "kl_divergence": tot_avg_kl_div / epochs_done,
+        "time": t1 - t0,
     }
 
 
@@ -233,7 +246,7 @@ def main():
 
         rollout_data = []
         for _ in range(n_jobs):
-            rollout_data.extend(collect_rollout(env))
+            rollout_data.extend(collect_rollout(env))  # should be in parallel
 
         rewards = torch.stack([d["rewards"] for d in rollout_data])
         values = torch.stack([d["values"] for d in rollout_data])
@@ -268,6 +281,7 @@ def main():
         print(f"  Value Loss: {stats['value_loss']:.4f}")
         print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
         print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
+        print(f"  Time taken: {stats['time']:.4f} s")
         print("=" * 60)
 
         if (episode + 1) % 50 == 0:

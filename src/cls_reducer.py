@@ -18,7 +18,6 @@ class CLSReducer(nn.Module):
         nlayer: int = 3,
         dim_feedforward: int = 1024,
         dropout: float = 0.0,
-        emb_std: float = 0.02,
     ):
         super().__init__()
         if seq_len != OBS_DIM[0]:
@@ -29,7 +28,6 @@ class CLSReducer(nn.Module):
         self.seq_len = seq_len
         self.feat_dim = feat_dim
         self.d_model = d_model
-        self.emb_std = emb_std
 
         self.in_proj = nn.Linear(feat_dim, d_model)
 
@@ -86,9 +84,10 @@ class CLSReducer(nn.Module):
         init.orthogonal_(self.in_proj.weight, gain=1.0)
         init.zeros_(self.in_proj.bias)
 
-        init.normal_(self.cls, std=self.emb_std)
-        init.normal_(self.type_emb.weight, std=self.emb_std)
-        init.normal_(self.part_emb.weight, std=self.emb_std)
+        emb_gain = self.d_model ** -0.5
+        init.normal_(self.cls, std=emb_gain)
+        init.normal_(self.type_emb.weight, std=emb_gain)
+        init.normal_(self.part_emb.weight, std=emb_gain)
 
         for p in self.encoder.parameters():
             if p.dim() > 1:

@@ -1,4 +1,5 @@
 import json
+import time
 from dataclasses import dataclass
 
 import torch
@@ -8,7 +9,7 @@ from poke_env.battle.field import Field
 from poke_env.battle.pokemon import Pokemon
 from poke_env.battle.side_condition import SideCondition
 from poke_env.battle.weather import Weather
-from transformers import BatchEncoding, BertTokenizer
+from transformers import BatchEncoding, BertTokenizerFast
 
 from lookups import (
     EFFECT_DESCRIPTION,
@@ -30,7 +31,7 @@ NUM_TARGETS = 5
 NUM_GIMMICKS = 1
 ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
 
-TOKENIZER = BertTokenizer.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+tokenizer = BertTokenizerFast.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 
 
 @dataclass
@@ -359,7 +360,7 @@ def from_battle(battle: AbstractBattle) -> BattleObservation:
     text_inputs = [field_txt, info_txt, *p1_flat, *opp_flat]
 
     # tokens for text section
-    tokens = TOKENIZER(
+    tokens = tokenizer(
         text_inputs,
         max_length=512,
         padding="max_length",
@@ -371,6 +372,7 @@ def from_battle(battle: AbstractBattle) -> BattleObservation:
     numerics = torch.tensor(p1_arr + opp_arr)  # (12, 28)
 
     return BattleObservation(tokens=tokens, numeric=numerics)
+
 
 def get_action_mask(battle: AbstractBattle):
     """
