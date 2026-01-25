@@ -1,6 +1,4 @@
 import json
-import time
-from dataclasses import dataclass
 
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
@@ -9,7 +7,7 @@ from poke_env.battle.field import Field
 from poke_env.battle.pokemon import Pokemon
 from poke_env.battle.side_condition import SideCondition
 from poke_env.battle.weather import Weather
-from transformers import BatchEncoding, BertTokenizerFast
+from transformers import BertModel, BertTokenizerFast
 
 from lookups import (
     EFFECT_DESCRIPTION,
@@ -32,12 +30,7 @@ NUM_GIMMICKS = 1
 ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
 
 tokenizer = BertTokenizerFast.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
-
-
-@dataclass
-class BattleObservation:
-    tokens: BatchEncoding
-    numeric: torch.Tensor
+model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 
 
 def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
@@ -328,8 +321,10 @@ def _get_info_text(p1_tera: Pokemon | None, p2_tera: Pokemon | None) -> str:
     return p1_str + p2_str
 
 
-def from_battle(battle: AbstractBattle) -> BattleObservation:
+def from_battle(battle: AbstractBattle):
     assert isinstance(battle, DoubleBattle)
+    if battle.teampreview:
+        return torch.rand(OBS_DIM, dtype=torch.float32)
 
     p1_txt, p1_arr, opp_txt, opp_arr = _get_team_obs(battle)
     field_txt = _get_field_text(battle)
@@ -349,29 +344,38 @@ def from_battle(battle: AbstractBattle) -> BattleObservation:
     info_txt = _get_info_text(p1_tera, opp_tera)
 
     # combine the stuff above into one observation
-    # TEXT SECTION
     # row 0: pad p1 and opp locals into a string
     # row 1: extra information (for now tera usage)
-    # row 2-25: 2 rows per pokemon in players team and opponents team
-    # NUMERIC SECTION
-    # row 26-37: 1 rows per pokemon in players team and opponents team
+    # row 2-25: 2 rows per pokemon in players team and opponents team (text)
+    # row 26-37: 1 rows per pokemon in players team and opponents team (numeric)
     p1_flat = [text for pair in p1_txt for text in pair]
     opp_flat = [text for pair in opp_txt for text in pair]
     text_inputs = [field_txt, info_txt, *p1_flat, *opp_flat]
 
-    # tokens for text section
-    tokens = tokenizer(
+    # cls mean concat
+    encoded = tokenizer(
         text_inputs,
         max_length=512,
         padding="max_length",
         truncation=True,
         return_tensors="pt",
     )
+    with torch.no_grad():
+        outputs = model(**encoded)
+    last_hidden = outputs.last_hidden_state  # (26, seq_len, 312)
+    cls_emb = last_hidden[:, 0, :]  # (26, 312)
+    # Exclude padding tokens for mean pooling
+    mask = encoded["attention_mask"].unsqueeze(-1)  # (26, seq_len, 1)
+    masked_hidden = last_hidden * mask
+    sum_hidden = masked_hidden.sum(dim=1)
+    len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
+    mean_emb = sum_hidden / len_nonpad  # (26, 312)
+    text_emb = torch.cat([cls_emb, mean_emb], dim=-1)  # (26, 624)
 
-    # numerical features
-    numerics = torch.tensor(p1_arr + opp_arr)  # (12, 28)
+    num_emb = torch.tensor(p1_arr + opp_arr)
+    num_emb = torch.cat([num_emb, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)
 
-    return BattleObservation(tokens=tokens, numeric=numerics)
+    return torch.cat([text_emb, num_emb], dim=0)
 
 
 def get_action_mask(battle: AbstractBattle):

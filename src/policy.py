@@ -1,17 +1,14 @@
-import time
-
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-from peft import LoraConfig, get_peft_model
+from encoder import ACT_SIZE, OBS_DIM
 from torch.distributions import Categorical
-from transformers import BatchEncoding, BertModel
 
 from cls_reducer import CLSReducer
-from observation_builder import ACT_SIZE, OBS_DIM, BattleObservation
 
 
-class ActorHead(nn.Module):
+# Needs all inputs to be on the same device as the model
+class PolicyNet(nn.Module):
     def __init__(
         self,
         obs_dim=OBS_DIM,
@@ -101,6 +98,42 @@ class ActorHead(nn.Module):
             value,
         )
 
+    def get_policy_masked_logits(
+        self, obs: torch.Tensor, action_taken: torch.Tensor, action_mask: torch.Tensor | None
+    ):
+        # returns policy probs in log space assuming the given action
+        # returns log probs for the joint distribution
+        policy_logits, _, _, _ = self(obs, action_mask, sample_actions=False)
+
+        if action_mask is None:
+            return policy_logits
+
+        logits = self._apply_masks(policy_logits, action_mask)  # (B, 2, A)
+        logits = self._apply_sequential_masks(logits, action_taken[:, 0], action_mask)
+        return logits
+
+    def evaluate_actions(
+        self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
+
+        if action_mask is not None:
+            logits = self._apply_masks(policy_logits, action_mask)
+            logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask)
+        else:
+            logits = policy_logits
+
+        cat1 = Categorical(logits=logits[:, 0])
+        cat2 = Categorical(logits=logits[:, 1])
+
+        log_prob1 = cat1.log_prob(actions[:, 0])
+        log_prob2 = cat2.log_prob(actions[:, 1])
+        log_prob = log_prob1 + log_prob2
+
+        entropy = cat1.entropy() + cat2.entropy()
+
+        return log_prob, entropy, value
+
     def _apply_masks(self, logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
         # Replace logits of illegal actions with -inf so they have zero probability
         mask = action_mask == 0
@@ -117,8 +150,7 @@ class ActorHead(nn.Module):
         pass_mask = action1 == 0
 
         # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
-        if action1[switch_mask].numel() > 0:
-            mask2[switch_mask, action1[switch_mask]] = 0
+        mask2[switch_mask, action1[switch_mask]] = 0
 
         # If Pokemon 1 uses terastallize in certain moves, Pokemon 2 cannot also tera in that range
         mask2[tera_mask, 27:47] = 0
@@ -133,119 +165,3 @@ class ActorHead(nn.Module):
         logits_out = logits.clone()
         logits_out[:, 1] = logits[:, 1].masked_fill(mask2 == 0, float("-inf"))
         return logits_out
-
-
-# Grad flows through BERT model as well now
-class PolicyNet(nn.Module):
-    def __init__(
-        self,
-        obs_dim=OBS_DIM,
-        act_size=ACT_SIZE,
-        d_model=256,
-        nhead=8,
-        nlayer=3,
-        net_arch=(256, 256, 128),
-    ) -> None:
-        super().__init__()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        lora_config = LoraConfig(
-            r=8,  # rank
-            lora_alpha=8,
-            target_modules=[
-                "query",
-                "value",
-            ],
-            lora_dropout=0.1,
-            bias="none",
-        )
-
-        base_model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
-        self.base_model = get_peft_model(base_model, lora_config)
-
-        self.actor_head = ActorHead(
-            obs_dim=obs_dim,
-            act_size=act_size,
-            d_model=d_model,
-            nhead=nhead,
-            nlayer=nlayer,
-            net_arch=net_arch,
-        ).to(self.device)
-
-    def get_cls_mean_concat(self, tokens: BatchEncoding) -> torch.Tensor:
-        outputs = self.base_model(**tokens)
-        last_hidden = outputs.last_hidden_state  # (26, seq_len, 312)
-        cls_emb = last_hidden[:, 0, :]  # (26, 312)
-        # Exclude padding tokens for mean pooling
-        mask = tokens["attention_mask"].unsqueeze(-1)  # type: ignore
-        masked_hidden = last_hidden * mask
-        sum_hidden = masked_hidden.sum(dim=1)
-        len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
-        mean_emb = sum_hidden / len_nonpad  # (26, 312)
-        return torch.cat([cls_emb, mean_emb], dim=-1)  # (26, 624)
-
-    def assemble_input(self, obs: BattleObservation) -> torch.Tensor:
-        text_obs = self.get_cls_mean_concat(obs.tokens)
-        num_obs = torch.cat(
-            [obs.numeric, torch.zeros((12, OBS_DIM[1] - obs.numeric.shape[1]))], dim=1
-        )
-        return torch.cat([text_obs, num_obs], dim=0)  # (38, 624)
-
-    def forward(
-        self,
-        obs: list[BattleObservation],
-        action_mask: torch.Tensor | None,
-        sample_actions: bool = True,
-    ):
-        # t0 = time.time()
-        input_slices = [self.assemble_input(o).unsqueeze(0) for o in obs]
-        batch_input = torch.cat(input_slices, dim=0).to(self.device)
-        # t1 = time.time()
-        res = self.actor_head(batch_input, action_mask, sample_actions)
-        # t2 = time.time()
-        # print(f"BERT time = {t1 - t0}, Actor Head time = {t2 - t1}")
-        return res
-
-    def get_policy_masked_logits(
-        self,
-        obs: list[BattleObservation],
-        action_taken: torch.Tensor,
-        action_mask: torch.Tensor | None,
-    ):
-        # returns policy probs in log space assuming the given action
-        # returns log probs for the joint distribution
-        policy_logits, _, _, _ = self(obs, action_mask, sample_actions=False)
-
-        if action_mask is None:
-            return policy_logits
-
-        logits = self.actor_head._apply_masks(policy_logits, action_mask)  # (B, 2, A)
-        logits = self.actor_head._apply_sequential_masks(logits, action_taken[:, 0], action_mask)
-        return logits
-
-    def evaluate_actions(
-        self,
-        obs: list[BattleObservation],
-        actions: torch.Tensor,
-        action_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
-
-        if action_mask is not None:
-            logits = self.actor_head._apply_masks(policy_logits, action_mask)
-            logits = self.actor_head._apply_sequential_masks(logits, actions[:, 0], action_mask)
-        else:
-            logits = policy_logits
-
-        cat1 = Categorical(logits=logits[:, 0])
-        cat2 = Categorical(logits=logits[:, 1])
-        log_prob1 = cat1.log_prob(actions[:, 0])
-        log_prob2 = cat2.log_prob(actions[:, 1])
-        log_prob = log_prob1 + log_prob2
-
-        entropy1 = cat1.entropy()
-        entropy2 = cat2.entropy()
-        # entropy approximated as if action1 and action2 are independent
-        entropy = entropy1 + entropy2
-
-        return log_prob, entropy, value

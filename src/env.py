@@ -23,7 +23,6 @@ from poke_env.ps_client import (
 from poke_env.teambuilder import Teambuilder
 
 import observation_builder
-from observation_builder import BattleObservation
 from teams import RandomTeamFromPool
 
 
@@ -350,6 +349,6 @@ class SimEnv(Gen9VGCEnv):
         else:
             return 0
 
-    def embed_battle(self, battle: AbstractBattle) -> BattleObservation:
+    def embed_battle(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
         return observation_builder.from_battle(battle)

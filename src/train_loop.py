@@ -16,7 +16,7 @@ num_episodes = 1000
 gamma = 0.95
 gae_lambda = 0.98  # sparse reward counteraction
 lr = 1e-4
-batch_size = 4  # for testing (since my cpu doesnt have enough memory), increase it later
+batch_size = 64
 clip_range = 0.2
 entropy_coef = 0.01
 value_coef = 0.5
@@ -26,13 +26,7 @@ ppo_epochs = 4
 n_jobs = 4
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
-optimizer = optim.Adam(
-    [
-        {"params": policy.base_model.parameters(), "lr": 1e-5},
-        {"params": policy.actor_head.parameters(), "lr": lr},
-    ],
-    eps=1e-5,
-)
+optimizer = optim.AdamW(policy.parameters(), lr=lr, eps=1e-5)
 
 if policy.device.type == "cuda":
     policy.compile()
@@ -76,7 +70,6 @@ def compute_gae(rewards, values, dones, gamma=gamma, gae_lambda=gae_lambda):
 
 def collect_rollout(env):
     policy.eval()
-    policy.base_model.gradient_checkpointing_disable()  # type: ignore
 
     obs, _ = env.reset()
     episode_data = []
@@ -88,7 +81,7 @@ def collect_rollout(env):
         action_mask_agent1 = observation_builder.get_action_mask(env.battle1)
         action_mask_agent2 = observation_builder.get_action_mask(env.battle2)
 
-        obs_batch = [obs_agent1, obs_agent2]
+        obs_batch = torch.stack([obs_agent1, obs_agent2], dim=0).to(policy.device)
         action_mask_batch = torch.stack([action_mask_agent1, action_mask_agent2], dim=0).to(
             policy.device
         )
@@ -134,8 +127,6 @@ def collect_rollout(env):
 
 def ppo_update(rollout_data):
     policy.train()
-    policy.base_model.gradient_checkpointing_enable()  # type: ignore
-
     t0 = time.time()
 
     observations = rollout_data["obs"]
@@ -167,7 +158,7 @@ def ppo_update(rollout_data):
             minibatch_end = minibatch_start + batch_size
             mb_idx = minibatch_indices[minibatch_start:minibatch_end]
 
-            mb_observations = [observations[i] for i in mb_idx]
+            mb_observations = observations[mb_idx].to(policy.device)
             mb_actions = actions[mb_idx].to(policy.device)
             mb_old_log_probs = old_log_probs[mb_idx].to(policy.device)
             mb_advantages = advantages[mb_idx].to(policy.device)
@@ -257,7 +248,7 @@ def main():
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         T, B = rewards.shape
-        flat_obs = [obs for d in rollout_data for obs in d["obs"]]
+        flat_obs = torch.stack([d["obs"] for d in rollout_data]).reshape(T * B, *OBS_DIM)
         flat_actions = torch.stack([d["actions"] for d in rollout_data]).reshape(T * B, 2)
         flat_log_probs = torch.stack([d["log_probs"] for d in rollout_data]).reshape(-1)
         flat_action_masks = torch.stack([d["action_masks"] for d in rollout_data]).reshape(
