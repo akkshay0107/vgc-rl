@@ -13,11 +13,11 @@ class CLSReducer(nn.Module):
         self,
         seq_len: int,
         feat_dim: int,
-        d_model: int = 512,
+        d_model: int = 768,
         nhead: int = 8,
-        nlayer: int = 3,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.05,
+        nlayer: int = 2,
+        dim_feedforward: int = 3072,
+        dropout: float = 0.1,
     ):
         super().__init__()
         if seq_len != OBS_DIM[0]:
@@ -31,7 +31,8 @@ class CLSReducer(nn.Module):
 
         self.in_proj = nn.Linear(feat_dim, d_model)
 
-        self.cls = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.cls_base = nn.Parameter(torch.rand(1, 1, d_model) * self.d_model**-0.5)
+        self.cls_conditioner = nn.Linear(d_model, d_model)
 
         self.type_emb = nn.Embedding(4, d_model)
         self.part_emb = nn.Embedding(3, d_model)
@@ -46,7 +47,7 @@ class CLSReducer(nn.Module):
             activation="gelu",
         )
         self.encoder = nn.TransformerEncoder(
-            enc_layer, num_layers=nlayer, enable_nested_tensor=False
+            enc_layer, num_layers=nlayer, enable_nested_tensor=True
         )
 
         type_ids, part_ids = self._build_ids()
@@ -56,7 +57,6 @@ class CLSReducer(nn.Module):
         self._init_weights()
 
     def _build_ids(self):
-        assert self.seq_len == OBS_DIM[0]
         type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
         type_ids[0] = self.CLS
         type_ids[1] = type_ids[2] = self.FIELD
@@ -84,8 +84,11 @@ class CLSReducer(nn.Module):
         init.orthogonal_(self.in_proj.weight, gain=1.0)
         init.zeros_(self.in_proj.bias)
 
+        init.orthogonal_(self.cls_conditioner.weight, gain=1.0)
+        init.zeros_(self.cls_conditioner.bias)
+
         emb_gain = self.d_model**-0.5
-        init.normal_(self.cls, std=emb_gain)
+        init.normal_(self.cls_base, std=emb_gain)
         init.normal_(self.type_emb.weight, std=emb_gain)
         init.normal_(self.part_emb.weight, std=emb_gain)
 
@@ -95,32 +98,23 @@ class CLSReducer(nn.Module):
             else:
                 nn.init.zeros_(p)
 
-    def forward(
-        self, obs: torch.Tensor, key_padding_mask: torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
         if obs.dim() == 2:
             obs = obs.unsqueeze(0)
         B, S, F = obs.shape
         if S != self.seq_len or F != self.feat_dim:
             raise ValueError(f"Got shape ({S}, {F}). Expected ({self.seq_len}, {self.feat_dim})")
 
-        if key_padding_mask is not None:
-            if key_padding_mask.dim() != 2 or key_padding_mask.size(0) != B:
-                raise ValueError("key_padding_mask must be (B, S) or (B, S+1).")
-            if key_padding_mask.size(1) == S:
-                cls_pad = torch.zeros((B, 1), dtype=torch.bool, device=key_padding_mask.device)
-                key_padding_mask = torch.cat([cls_pad, key_padding_mask], dim=1)
-            elif key_padding_mask.size(1) != S + 1:
-                raise ValueError("key_padding_mask must be (B, S) or (B, S+1).")
-
         x = self.in_proj(obs)
-        cls = self.cls.expand(B, -1, -1)
+
+        global_ctx = x.mean(dim=1, keepdim=True)
+        cls = self.cls_base.expand(B, -1, -1) + self.cls_conditioner(global_ctx)
         x = torch.cat([cls, x], dim=1)
 
         type_e = self.type_emb(self.type_ids).unsqueeze(0).expand(B, -1, -1)
         part_e = self.part_emb(self.part_ids).unsqueeze(0).expand(B, -1, -1)
-        x = x + type_e
+        x += type_e
         x[:, 3:, :] += part_e
 
-        x = self.encoder(x, src_key_padding_mask=key_padding_mask)
+        x = self.encoder(x)
         return x[:, 0]

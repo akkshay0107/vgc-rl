@@ -142,19 +142,15 @@ class PolicyNet(nn.Module):
     def _apply_sequential_masks(
         self, logits: torch.Tensor, action1: torch.Tensor, action_mask: torch.Tensor
     ):
-        mask2 = action_mask[:, 1].clone()
-
-        # Create boolean masks for each action types of Pokemon 1
+        mask2 = action_mask[:, 1]  # using view of action mask
         switch_mask = (1 <= action1) & (action1 <= 6)
         tera_mask = (26 < action1) & (action1 <= 46)
         pass_mask = action1 == 0
 
         # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
         mask2[switch_mask, action1[switch_mask]] = 0
-
         # If Pokemon 1 uses terastallize in certain moves, Pokemon 2 cannot also tera in that range
         mask2[tera_mask, 27:47] = 0
-
         # If Pokemon 1 passes, Pokemon 2 cannot pass as well unless no valid moves left
         mask2[pass_mask, 0] = 0
 
@@ -162,6 +158,10 @@ class PolicyNet(nn.Module):
         no_valid = mask2.sum(-1) == 0
         mask2[no_valid, 0] = 1
 
-        logits_out = logits.clone()
-        logits_out[:, 1] = logits[:, 1].masked_fill(mask2 == 0, float("-inf"))
-        return logits_out
+        return torch.stack(
+            [
+                logits[:, 0],  # first row actions unchanged
+                logits[:, 1].masked_fill(~mask2, float("-inf")),  # masked row for second pokemon
+            ],
+            dim=1,
+        )
