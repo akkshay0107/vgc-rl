@@ -24,7 +24,7 @@ from teams import RandomTeamFromPool
 
 _TARGET_NAME = {-2: "default", -1: "self", 0: "ally", 1: "opp1", 2: "opp2"}
 
-
+# TODO: improve this to give all the important information
 def print_valid_actions_from_mask(battle, action_mask):
     m = action_mask
     if torch.is_tensor(m):
@@ -38,6 +38,12 @@ def print_valid_actions_from_mask(battle, action_mask):
     for pos in range(2):
         active = battle.active_pokemon[pos]
         if active is None:
+            print("== EMPTY SLOT ==")
+            for i in range(6):
+                a = 1 + i
+                if a < m.shape[1] and m[pos, a]:
+                    mon = team_list[i]
+                    print(f"{a}: SWITCH -> {mon.species}")
             continue
 
         mvs = (
@@ -75,9 +81,9 @@ def print_valid_actions_from_mask(battle, action_mask):
 # which is random before the battle with the bot (although unnecessarily expensive)
 # this way I shouldn't be able to tell which opponent is of which
 # type before the game starts
-def get_opponent(num: int, fmt: str, team: Teambuilder) -> Player:
+def get_opponent(num: float, fmt: str, team: Teambuilder) -> Player:
     name = uuid.uuid4().hex[:7]
-    if num == 0:
+    if num < 0.7:
         return SimpleHeuristicsPlayer(
             account_configuration=AccountConfiguration(name, None),
             battle_format=fmt,
@@ -85,7 +91,7 @@ def get_opponent(num: int, fmt: str, team: Teambuilder) -> Player:
             team=team,
             accept_open_team_sheet=True,
         )
-    elif num == 1:
+    elif num < 0.9:
         return MaxBasePowerPlayer(
             account_configuration=AccountConfiguration(name, None),
             battle_format=fmt,
@@ -173,7 +179,7 @@ async def main():
     # Have to remove the bot on bot moves from epsiode data for that
     choice = "y"
     while choice == "y":
-        num = random.randint(0, 2)
+        num = random.random()
         selected_opp = get_opponent(num, fmt, team)
 
         await term_player.battle_against(selected_opp, n_battles=1)
