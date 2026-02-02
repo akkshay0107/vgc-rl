@@ -22,3 +22,4 @@ checkpoints/*
 
 # Replays
 replays/*
+test_replays/*
