@@ -35,7 +35,7 @@ class ReplayDataset(Dataset):
 
 def train_behavior_cloning(replays_path):
     # Configs
-    BATCH_SIZE = 64
+    BATCH_SIZE = 32
     NUM_EPOCHS = 10
     LEARNING_RATE = 3e-4
 
@@ -63,10 +63,7 @@ def train_behavior_cloning(replays_path):
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    # Get dimensions
-    sample = dataset[0]
-
-    # Initialize model, loss, optimizer
+    # Initialize policy and optimizer
     policy = PolicyNet()
     optimizer = torch.optim.AdamW(policy.parameters(), lr=LEARNING_RATE, eps=1e-5)  
 
@@ -112,8 +109,6 @@ def train_behavior_cloning(replays_path):
                 obs = batch["obs"]
                 mask = batch["mask"]
                 target = batch["action"]
-                
-                optimizer.zero_grad()
                 
                 log_prob, _, _ = policy.evaluate_actions(obs, target, mask)
                 loss = -log_prob.mean()
