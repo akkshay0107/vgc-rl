@@ -4,6 +4,12 @@ from pathlib import Path
 from poke_env.battle.effect import Effect
 from poke_env.battle.status import Status
 
+# janky way to fetch the 36 pokemon in the game
+# TODO: update this to have a more flexible pokemon description fetch
+# maybe use the pokemon base species, ability, item and move set to
+# create a hash that has a description for it
+# should allow to add newer sets nicely
+
 POKEMON = {
     "liquidation,lastrespects,aquajet,protect": 1,
     "superfang,feint,followme,protect": 2,
@@ -54,7 +60,7 @@ POKEMON_DESCRIPTION = {
     8: "Indeedee-F with Psychic Surge, which sets up Psychic Terrain when it enters the battle. Max Defense and significant investment in HP with a Relaxed nature and 0 Speed IVs make it a bulky Trick Room setter and supporter.",
     9: "Torkoal with Drought, which sets up sun when it enters the battle. Max HP and Special Attack with a Quiet nature and 0 Speed IVs make it a powerful Trick Room attacker that can abuse sun-boosted Fire-type moves.",
     10: "Ursaluna with Guts, which boosts its Attack by 1.5x when it has a status condition. Max HP and Attack with a Brave nature and 0 Speed IVs make it a powerful Trick Room attacker, especially when combined with the Flame Orb.",
-    11: "Gallade with Sharpness, which boosts the power of slicing moves by 1.5x. Max Attack and significant investment in HP with a Brave nature and 0 Speed IVs make it a powerful Trick Room attacker.",
+    11: "Ga    print(len(ITEM_DESCRIPTIONS))llade with Sharpness, which boosts the power of slicing moves by 1.5x. Max Attack and significant investment in HP with a Brave nature and 0 Speed IVs make it a powerful Trick Room attacker.",
     12: "Maushold with Technician, which boosts the power of moves with 60 or less base power by 1.5x. Max Attack and Speed with a Jolly nature make it a fast attacker that can abuse Population Bomb.",
     13: "Dragonite with Multiscale, which halves damage taken when at full HP. Max Speed and high Attack with an Adamant nature make it a fast and powerful attacker.",
     14: "Gholdengo with Good as Gold, which makes it immune to status moves. Max Speed and significant investment in Special Attack and HP with a Timid nature make it a fast special attacker.",
@@ -82,28 +88,10 @@ POKEMON_DESCRIPTION = {
     36: "Dondozo with Unaware, which ignores the opponent's stat changes when attacking. Max HP and Special Defense with a Careful nature make it a very bulky wall that can't be easily broken by setup sweepers.",
 }
 
-ITEM_DESCRIPTION = {
-    "focussash": "Holds Focus Sash. If the holder has full HP, it survives a hit that would otherwise KO it with 1 HP. Single use. This is useful for frail pokemon to guarantee they can get off at least one move.",
-    "rockyhelmet": "Holds Rocky Helmet. If the holder is hit by a contact move, the attacker loses 1/6 of its maximum HP. This is useful to punish physical attackers.",
-    "loadeddice": "Holds Loaded Dice. The holder's multi-hit moves are more likely to hit more times. This is useful for Dragonite with Scale Shot to maximize its damage output.",
-    "safetygoggles": "Holds Safety Goggles. The holder is immune to powder moves and damage from Sandstorm or Hail. This is useful to avoid moves like Spore, Rage Powder or Sleep Powder.",
-    "assaultvest": "Holds Assault Vest. The holder's Special Defense is 1.5x, but it can only select damaging moves. This is useful to make Pokemon tank special attacks.",
-    "choicespecs": "Holds Choice Specs. The holder's Special Attack is 1.5x, but it can only select the first move it executes. This is useful to threaten immediate large damage.",
-    "covertcloak": "Holds Covert Cloak. The holder is immune to the additional effects of other Pokemon's moves. This is useful to avoid flinching from Fake out or stat drops.",
-    "psychicseed": "Holds Psychic Seed. If the terrain is Psychic Terrain, consumes the seed to raise the holder's Special Defense by 1 stage. This is useful when paired with a Psychic Terrain setter.",
-    "flameorb": "Holds Flame Orb. At the end of each turn, this item attempts to burn the holder. This is useful for Ursaluna with the Guts ability, which boosts its Attack when it has a status condition.",
-    "clearamulet": "Holds Clear Amulet. Prevents other Pokemon from lowering the holder's stats. This is useful to avoid being weakened by abilities like Intimidate.",
-    "widelens": "Holds Wide Lens. The accuracy of the holder's moves is 1.1x. This is useful to increase consistency of inaccurate moves.",
-    "lifeorb": "Holds Life Orb. The holder's attacks do 1.3x damage, but it loses 1/10 of its max HP after each attack. This is useful to get a significant boost in damage output.",
-    "sitrusberry": "Holds Sitrus Berry. Restores 1/4 of the holder's max HP when its HP is below 1/2. Single use. This is useful on bulky pokemon to increase survivability.",
-    "miracleseed": "Holds Miracle Seed. The holder's Grass-type moves have 1.2x power. This is useful for grass pokemon to boost the power of its STAB moves.",
-    "choicescarf": "Holds Choice Scarf. The holder's Speed is 1.5x, but it can only select the first move it executes. This is useful for Pelipper to outspeed and revenge kill faster threats.",
-    "powerherb": "Holds Power Herb. The holder's two-turn moves complete in one turn. Single use. This is useful for Archaludon to use Electro Shot immediately.",
-    "grassyseed": "Holds Grassy Seed. If the terrain is Grassy Terrain, consumes the seed to raise the holder's Defense by 1 stage. This is useful when paired with a Grassy Terrain setter.",
-    "whiteherb": "Holds White Herb. If any of the holder's stats are lowered, consumes the herb to restore them to normal. Single use. This is useful to counteract the stat drops from Close Combat and other moves.",
-    "blackglasses": "Holds Black Glasses. The holder's Dark-type moves have 1.2x power. This is useful for dark type pokemon to boost the power of its STAB moves.",
-    "leftovers": "Holds Leftovers. At the end of each turn, the holder restores 1/16 of its maximum HP. This is useful for bulky pokemon to increase its longevity.",
-}
+ITEM_PATH = Path(__file__).parent.parent / "data" / "items.json"
+
+with ITEM_PATH.open() as f:
+    ITEM_DESCRIPTION = json.load(f)
 
 STATUS_DESCRIPTION = {
     Status.BRN: "This pokemon is burned. Burn reduces the Pokemon's Attack stat by 50% and causes them to lose 6.25% of their maximum HP at the end of each turn. Fire-type Pokemon cannot be burned",
@@ -129,4 +117,5 @@ with MOVE_PATH.open() as f:
 
 
 if __name__ == "__main__":
-    print(len(MOVES))
+    print(f"Number of moves: {len(MOVES)}")
+    print(f"Number of items: {len(ITEM_DESCRIPTION)}")
