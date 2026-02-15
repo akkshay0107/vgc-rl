@@ -24,7 +24,7 @@ from teams import RandomTeamFromPool
 
 _TARGET_NAME = {-2: "default", -1: "self", 0: "ally", 1: "opp1", 2: "opp2"}
 
-# TODO: improve this to give all the important information
+
 def print_valid_actions_from_mask(battle, action_mask):
     m = action_mask
     if torch.is_tensor(m):
@@ -125,6 +125,7 @@ class TerminalPlayer(Player):
 
         torch.save(self.episode_data, tmp_path)
         tmp_path.replace(save_path)
+        print(f"Replays saved to {save_path}")
 
         self.episode_data = []
         return str(save_path)
@@ -138,13 +139,52 @@ class TerminalPlayer(Player):
         action_mask = observation_builder.get_action_mask(battle).detach().cpu()
         print_valid_actions_from_mask(battle, action_mask)
 
-        line = await asyncio.to_thread(input, "")
-        action = [int(x) for x in line.split()][:2]
-        action_np = np.asarray(action, dtype=np.int64)
+        while True:
+            line = await asyncio.to_thread(input, "")
+            try:
+                action = [int(x) for x in line.split()]
+                if len(action) < 2:
+                    print("Error: Please input two actions. Re-input your two choices.")
+                    continue
+                action = action[:2]
+                action1, action2 = action
+            except ValueError:
+                print(
+                    "Error: Invalid input. Please enter two numbers separated by a space. Re-input your two choices."
+                )
+                continue
 
-        self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
+            if not action_mask[0, action1] or not action_mask[1, action2]:
+                print(
+                    "Error: One or more of your chosen actions are invalid. Re-input your two choices."
+                )
+                continue
 
-        return Gen9VGCEnv.action_to_order(action_np, battle)
+            # Check for mutual exclusivity
+            # Both switching to same slot
+            if (1 <= action1 <= 6) and action1 == action2:
+                print(
+                    "Error: Mutually exclusive actions selected. Both pokemon cannot switch to the same slot. Re-input your two choices."
+                )
+                continue
+
+            # Both terastallizing
+            if (27 <= action1 <= 46) and (27 <= action2 <= 46):
+                print(
+                    "Error: Mutually exclusive actions selected. Both pokemon cannot terastallize. Re-input your two choices."
+                )
+                continue
+
+            # Both passing
+            if action1 == 0 and action2 == 0:
+                print(
+                    "Error: Mutually exclusive actions selected. Both pokemon cannot pass. Re-input your two choices."
+                )
+                continue
+
+            action_np = np.asarray(action, dtype=np.int64)
+            self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
+            return Gen9VGCEnv.action_to_order(action_np, battle)
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
