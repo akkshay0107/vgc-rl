@@ -223,14 +223,28 @@ class TerminalPlayer(Player):
         obs = self.get_observation(battle)
         action_mask = observation_builder.get_action_mask(battle)
 
+        record_move = False
+        k_random_moves = 0
         if self.random_input:
             action_np = self._get_random_move(action_mask)
+            record_move = True
+        else:  # Human player logic
+            if battle.turn == 1:
+                k_random_moves = random.randint(0, 4)
+                if k_random_moves > 0:
+                    print(f"Starting with {k_random_moves} random moves.")
+
+            if battle.turn > k_random_moves:
+                action_np = await self._get_move_from_terminal(battle, action_mask)
+                record_move = True
+            else:
+                print(f"Playing randomly for turn {battle.turn}/{k_random_moves}")
+                action_np = self._get_random_move(action_mask)
+
+        if record_move:
             self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
-            return Gen9VGCEnv.action_to_order(action_np, battle)
-        else:
-            action_np = await self._get_move_from_terminal(battle, action_mask)
-            self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
-            return Gen9VGCEnv.action_to_order(action_np, battle)
+
+        return Gen9VGCEnv.action_to_order(action_np, battle)
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
@@ -269,25 +283,26 @@ async def main():
         while choice == "y":
             selected_opp = get_opponent(fmt, team)
             await term_player.battle_against(selected_opp, n_battles=1)
-            term_player._save_episode_data()
-
             # Cleanup newly created opponent
             await selected_opp.ps_client.stop_listening()
 
             choice = input("Play again? (y/n)")[0]
             choice = choice.lower()
 
-        # Cleanup
+        # Cleanup and save session
+        term_player._save_episode_data()
         await term_player.ps_client.stop_listening()
     else:
         N_BATTLES = 100
         for _ in range(N_BATTLES):
             selected_opp = get_opponent(fmt, team)
             await term_player.battle_against(selected_opp, n_battles=1)
-            term_player._save_episode_data()
 
             # Cleanup newly created opponent
             await selected_opp.ps_client.stop_listening()
+
+        term_player._save_episode_data()
+        await term_player.ps_client.stop_listening()
 
 
 if __name__ == "__main__":
