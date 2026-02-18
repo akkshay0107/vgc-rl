@@ -81,8 +81,9 @@ def print_valid_actions_from_mask(battle, action_mask):
 # which is random before the battle with the bot (although unnecessarily expensive)
 # this way I shouldn't be able to tell which opponent is of which
 # type before the game starts
-def get_opponent(num: float, fmt: str, team: Teambuilder) -> Player:
+def get_opponent(fmt: str, team: Teambuilder) -> Player:
     name = uuid.uuid4().hex[:7]
+    num = random.random()
     if num < 0.7:
         return SimpleHeuristicsPlayer(
             account_configuration=AccountConfiguration(name, None),
@@ -110,10 +111,11 @@ def get_opponent(num: float, fmt: str, team: Teambuilder) -> Player:
 
 
 class TerminalPlayer(Player):
-    def __init__(self, save_dir, *args, **kwargs):
+    def __init__(self, save_dir, random_input=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_dir = save_dir
         self.episode_data = []
+        self.random_input = random_input
 
     def _save_episode_data(self):
         save_dir = Path(self.save_dir)
@@ -130,14 +132,43 @@ class TerminalPlayer(Player):
         self.episode_data = []
         return str(save_path)
 
-    async def choose_move(self, battle: AbstractBattle):
-        assert isinstance(battle, DoubleBattle)
-        if battle._wait:
-            return DefaultBattleOrder()
+    def sequential_mask(self, action_mask, action1):
+        mask2 = action_mask[1]  # using view of action mask
+        switch_mask = (1 <= action1) & (action1 <= 6)
+        tera_mask = (26 < action1) & (action1 <= 46)
+        pass_mask = action1 == 0
 
-        obs = self.get_observation(battle)
-        action_mask = observation_builder.get_action_mask(battle).detach().cpu()
-        print_valid_actions_from_mask(battle, action_mask)
+        # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
+        mask2[switch_mask, action1[switch_mask]] = 0
+        # If Pokemon 1 uses terastallize in certain moves, Pokemon 2 cannot also tera in that range
+        mask2[tera_mask, 27:47] = 0
+        # If Pokemon 1 passes, Pokemon 2 cannot pass as well unless no valid moves left
+        mask2[pass_mask, 0] = 0
+
+        # If no valid action remains, force pass action to be valid for Pokemon 2
+        no_valid = mask2.sum(-1) == 0
+        mask2[no_valid, 0] = 1
+
+        return mask2
+
+    def logits_from_mask(self, action_mask):
+        logits = torch.ones_like(action_mask, dtype=torch.float32)
+        return logits.masked_fill(~action_mask.bool(), float("-inf"))
+
+    def _get_random_move(self, action_mask):
+        logits1 = self.logits_from_mask(action_mask[0])
+        cat1 = torch.distributions.Categorical(logits=logits1)
+        action1 = cat1.sample()
+
+        mask2 = self.sequential_mask(action_mask, action1)
+        logits2 = self.logits_from_mask(mask2)
+        cat2 = torch.distributions.Categorical(logits=logits2)
+        action2 = cat2.sample()
+        return np.asarray([action1.item(), action2.item()], dtype=np.int64)
+
+    async def _get_move_from_terminal(self, battle, action_mask):
+        action_mask_cpu = action_mask.detach().cpu()
+        print_valid_actions_from_mask(battle, action_mask_cpu)
 
         while True:
             line = await asyncio.to_thread(input, "")
@@ -154,7 +185,7 @@ class TerminalPlayer(Player):
                 )
                 continue
 
-            if not action_mask[0, action1] or not action_mask[1, action2]:
+            if not action_mask_cpu[0, action1] or not action_mask_cpu[1, action2]:
                 print(
                     "Error: One or more of your chosen actions are invalid. Re-input your two choices."
                 )
@@ -182,7 +213,22 @@ class TerminalPlayer(Player):
                 )
                 continue
 
-            action_np = np.asarray(action, dtype=np.int64)
+            return np.asarray(action, dtype=np.int64)
+
+    async def choose_move(self, battle: AbstractBattle):
+        assert isinstance(battle, DoubleBattle)
+        if battle._wait:
+            return DefaultBattleOrder()
+
+        obs = self.get_observation(battle)
+        action_mask = observation_builder.get_action_mask(battle)
+
+        if self.random_input:
+            action_np = self._get_random_move(action_mask)
+            self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
+            return Gen9VGCEnv.action_to_order(action_np, battle)
+        else:
+            action_np = await self._get_move_from_terminal(battle, action_mask)
             self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
             return Gen9VGCEnv.action_to_order(action_np, battle)
 
@@ -205,6 +251,7 @@ async def main():
     save_dir = "./replays"
     term_player = TerminalPlayer(
         save_dir=save_dir,
+        random_input=False,
         account_configuration=AccountConfiguration("TermPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
@@ -217,22 +264,30 @@ async def main():
     # Potentially add cases where bots play each other and human takes over midway
     # (for diverse initial states, instead of always being on winning positions) ??
     # Have to remove the bot on bot moves from epsiode data for that
-    choice = "y"
-    while choice == "y":
-        num = random.random()
-        selected_opp = get_opponent(num, fmt, team)
+    if not term_player.random_input:
+        choice = "y"
+        while choice == "y":
+            selected_opp = get_opponent(fmt, team)
+            await term_player.battle_against(selected_opp, n_battles=1)
+            term_player._save_episode_data()
 
-        await term_player.battle_against(selected_opp, n_battles=1)
-        term_player._save_episode_data()
+            # Cleanup newly created opponent
+            await selected_opp.ps_client.stop_listening()
 
-        # Cleanup newly created opponent
-        await selected_opp.ps_client.stop_listening()
+            choice = input("Play again? (y/n)")[0]
+            choice = choice.lower()
 
-        choice = input("Play again? (y/n)")[0]
-        choice = choice.lower()
+        # Cleanup
+        await term_player.ps_client.stop_listening()
+    else:
+        N_BATTLES = 100
+        for _ in range(N_BATTLES):
+            selected_opp = get_opponent(fmt, team)
+            await term_player.battle_against(selected_opp, n_battles=1)
+            term_player._save_episode_data()
 
-    # Cleanup
-    await term_player.ps_client.stop_listening()
+            # Cleanup newly created opponent
+            await selected_opp.ps_client.stop_listening()
 
 
 if __name__ == "__main__":
