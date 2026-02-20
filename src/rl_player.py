@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 from poke_env import AccountConfiguration, LocalhostServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
-from poke_env.player import DefaultBattleOrder, MaxBasePowerPlayer, Player, RandomPlayer
+from poke_env.player import DefaultBattleOrder, MaxBasePowerPlayer, Player, RandomPlayer, SimpleHeuristicsPlayer
 from torch.distributions import Categorical
 
 import observation_builder
@@ -12,7 +12,6 @@ from env import Gen9VGCEnv
 from policy import PolicyNet
 from teampreview import TeamPreviewHandler
 from teams import RandomTeamFromPool
-
 
 class RLPlayer(Player):
     """
@@ -49,13 +48,13 @@ class RLPlayer(Player):
 
     def _top_p(self, obs, action_mask):
         policy_logits, _, _, _ = self.policy(obs, action_mask, sample_actions=False)
-        logits = self.policy.actor_head._apply_masks(policy_logits, action_mask)
+        logits = self.policy._apply_masks(policy_logits, action_mask)
 
         p1_logits = self._apply_top_p(logits[:, 0])
         cat1 = Categorical(logits=p1_logits)
         action1 = cat1.sample()  # (B,)
 
-        logits = self.policy.actor_head._apply_sequential_masks(logits, action1, action_mask)
+        logits = self.policy._apply_sequential_masks(logits, action1, action_mask)
         p2_logits = self._apply_top_p(logits[:, 1])
         cat2 = Categorical(logits=p2_logits)
         action2 = cat2.sample()  # (B,)
@@ -91,21 +90,36 @@ async def main():
     team = RandomTeamFromPool(team_files)
     fmt = "gen9vgc2025regh"
 
-    checkpoint_path = "PUT CHECKPOINT PATH HERE"
-    checkpoint = torch.load(checkpoint_path)
-
-    policy = PolicyNet()
-    policy.load_state_dict(checkpoint["model_state_dict"])
+    ppo_checkpoint_path = "C:/Users/oprea/Projects/vgc-rl/ppo_checkpoint.pt"
+    ppo_checkpoint = torch.load(ppo_checkpoint_path)
+    rl_policy = PolicyNet()
+    rl_policy.load_state_dict(ppo_checkpoint["model_state_dict"])
 
     tp_handler = TeamPreviewHandler()
 
     rl_player = RLPlayer(
-        policy=policy,
+        policy=rl_policy,
         teampreview_handler=tp_handler,
         account_configuration=AccountConfiguration("RLPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
-        max_concurrent_battles=10,
+        max_concurrent_battles=2,
+        team=team,
+        accept_open_team_sheet=True,
+    )
+
+    bc_checkpoint_path = "C:/Users/oprea/Projects/vgc-rl/behavior_cloning_checkpoint.pt"
+    bc_checkpoint = torch.load(bc_checkpoint_path)
+    bc_policy = PolicyNet()
+    bc_policy.load_state_dict(bc_checkpoint["model_state_dict"])
+
+    bc_player = RLPlayer(
+        policy=bc_policy,
+        teampreview_handler=tp_handler,
+        account_configuration=AccountConfiguration("BCPlayer", None),
+        battle_format=fmt,
+        server_configuration=LocalhostServerConfiguration,
+        max_concurrent_battles=2,
         team=team,
         accept_open_team_sheet=True,
     )
@@ -115,7 +129,7 @@ async def main():
         account_configuration=AccountConfiguration("RandomPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
-        max_concurrent_battles=10,
+        max_concurrent_battles=2,
         team=team,
         accept_open_team_sheet=True,
     )
@@ -124,28 +138,59 @@ async def main():
         account_configuration=AccountConfiguration("MaxPowerPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
-        max_concurrent_battles=10,
+        max_concurrent_battles=2,
+        team=team,
+        accept_open_team_sheet=True,
+    )
+
+    simple_heuristics_player = SimpleHeuristicsPlayer(
+        account_configuration=AccountConfiguration("SimpleHeurPlayer", None),
+        battle_format=fmt,
+        server_configuration=LocalhostServerConfiguration,
+        max_concurrent_battles=2,
         team=team,
         accept_open_team_sheet=True,
     )
 
     # for statistics
-    await rl_player.battle_against(random_player, n_battles=500)
+    await rl_player.battle_against(random_player, n_battles=10)
     rand_wr = rl_player.win_rate
     rl_player.reset_battles()
 
-    await rl_player.battle_against(max_power_player, n_battles=500)
+    print("FINISHED FIRST BATCH OF BATTLES")
+
+    await rl_player.battle_against(max_power_player, n_battles=10)
     mbp_wr = rl_player.win_rate
     rl_player.reset_battles()
 
-    print(f"Win rate vs RandomPlayer: {rand_wr:.4%}")
-    print(f"Win rate vs MaxBasePowerPlayer: {mbp_wr:.4%}")
+    await rl_player.battle_against(simple_heuristics_player, n_battles=10)
+    sh_wr = rl_player.win_rate
+    rl_player.reset_battles()
+
+    await bc_player.battle_against(random_player, n_battles=10)
+    bc_rand_wr = bc_player.win_rate
+    bc_player.reset_battles()
+
+    await bc_player.battle_against(max_power_player, n_battles=10)
+    bc_mbp_wr = bc_player.win_rate
+    bc_player.reset_battles()
+
+    await bc_player.battle_against(simple_heuristics_player, n_battles=10)
+    bc_sh_wr = bc_player.win_rate
+    bc_player.reset_battles()
+
+    print(f"RL Player Win rate vs RandomPlayer: {rand_wr:.4%}")
+    print(f"RL Player Win rate vs MaxBasePowerPlayer: {mbp_wr:.4%}")
+    print(f"RL Player Win rate vs SimpleHeuristicsPlayer: {sh_wr:.4%}")
+    print(f"BC Player Win rate vs RandomPlayer: {bc_rand_wr:.4%}")
+    print(f"BC Player Win rate vs MaxBasePowerPlayer: {bc_mbp_wr:.4%}")
+    print(f"BC Player Win rate vs SimpleHeuristicsPlayer: {bc_sh_wr:.4%}")
 
     # Clean up
     await rl_player.ps_client.stop_listening()
     await random_player.ps_client.stop_listening()
     await max_power_player.ps_client.stop_listening()
-
+    await simple_heuristics_player.ps_client.stop_listening()
 
 if __name__ == "__main__":
     asyncio.run(main())
