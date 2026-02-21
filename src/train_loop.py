@@ -24,12 +24,18 @@ max_grad_norm = 0.5
 target_kl = 0.015
 ppo_epochs = 4
 n_jobs = 4
+eval_episodes = 10
+best_update_threshold = 0.55
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
+best_policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
 optimizer = optim.AdamW(policy.parameters(), lr=lr, eps=1e-5)
 
 if policy.device.type == "cuda":
     policy.compile()
+
+if best_policy.device.type == "cuda":
+    best_policy.compile()
 
 
 def save_checkpoint(path, episode):
@@ -38,6 +44,17 @@ def save_checkpoint(path, episode):
             "episode": episode,
             "model_state_dict": policy.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+        },
+        path,
+    )
+
+
+def save_best_checkpoint(path, episode, win_rate):
+    torch.save(
+        {
+            "episode": episode,
+            "win_rate": win_rate,
+            "model_state_dict": best_policy.state_dict(),
         },
         path,
     )
@@ -87,9 +104,20 @@ def collect_rollout(env):
         )
 
         with torch.no_grad():
-            _, log_probs, sampled_actions, values = policy(obs_batch, action_mask_batch)
+            _, _, action1, _ = policy(
+                obs_agent1.unsqueeze(0).to(policy.device),
+                action_mask_agent1.unsqueeze(0).to(policy.device),
+            )
+            _, _, action2, _ = best_policy(
+                obs_agent2.unsqueeze(0).to(best_policy.device),
+                action_mask_agent2.unsqueeze(0).to(best_policy.device),
+            )
 
-        assert sampled_actions is not None and log_probs is not None
+            sampled_actions = torch.cat([action1, action2], dim=0)
+            log_probs, _, values = policy.evaluate_actions(
+                obs_batch, sampled_actions.to(policy.device), action_mask_batch
+            )
+
         action1_np = sampled_actions[0].cpu().numpy()
         action2_np = sampled_actions[1].cpu().numpy()
 
@@ -182,7 +210,7 @@ def ppo_update(rollout_data):
             entropy_loss = -entropy.mean()
 
             total_loss = policy_loss + value_coef * value_loss + entropy_coef * entropy_loss
-
+            #TODO: save best policy
             optimizer.zero_grad()
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
@@ -226,11 +254,70 @@ def ppo_update(rollout_data):
     }
 
 
+def compare_winrate(env, policy_a, policy_b, n_episodes=eval_episodes):
+    policy_a.eval()
+    policy_b.eval()
+
+    wins_a = 0
+    losses_a = 0
+    ties = 0
+
+    for _ in range(n_episodes):
+        obs, _ = env.reset()
+        while True:
+            obs_agent1 = obs[env.agent1.username]
+            obs_agent2 = obs[env.agent2.username]
+
+            action_mask_agent1 = observation_builder.get_action_mask(env.battle1)
+            action_mask_agent2 = observation_builder.get_action_mask(env.battle2)
+
+            with torch.no_grad():
+                _, _, action1, _ = policy_a(
+                    obs_agent1.unsqueeze(0).to(policy_a.device),
+                    action_mask_agent1.unsqueeze(0).to(policy_a.device),
+                )
+                _, _, action2, _ = policy_b(
+                    obs_agent2.unsqueeze(0).to(policy_b.device),
+                    action_mask_agent2.unsqueeze(0).to(policy_b.device),
+                )
+
+            actions = {
+                env.agent1.username: action1[0].cpu().numpy(),
+                env.agent2.username: action2[0].cpu().numpy(),
+            }
+
+            next_obs, rewards, terminated, truncated, _ = env.step(actions)
+            done1 = terminated[env.agent1.username] or truncated[env.agent1.username]
+            done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
+
+            if done1 or done2:
+                r1 = rewards[env.agent1.username]
+                r2 = rewards[env.agent2.username]
+                if r1 > r2:
+                    wins_a += 1
+                elif r2 > r1:
+                    losses_a += 1
+                else:
+                    ties += 1
+                break
+
+            obs = next_obs
+
+    total = wins_a + losses_a + ties
+    win_rate = wins_a / total if total > 0 else 0.0
+    return {"win_rate": win_rate, "wins": wins_a, "losses": losses_a, "ties": ties}
+
+
 def main():
     checkpoint_path = "ppo_checkpoint.pt"
+    best_checkpoint_path = "ppo_best_checkpoint.pt"
     env = SimEnv.build_env()
 
     start = load_checkpoint(checkpoint_path) or 0
+    best_policy.load_state_dict(policy.state_dict())
+    if os.path.exists(best_checkpoint_path):
+        best_checkpoint = torch.load(best_checkpoint_path, map_location=best_policy.device)
+        best_policy.load_state_dict(best_checkpoint["model_state_dict"])
     print(f"Starting training from episode {start + 1}")
     for episode in range(start, num_episodes):
         print(f"Collecting rollout for episode {episode + 1}...")
@@ -263,6 +350,18 @@ def main():
             "returns": returns.reshape(-1),
             "action_masks": flat_action_masks,
         }
+
+        winrate_stats = compare_winrate(env, policy, best_policy)
+        print(
+            "Pre-update win rate "
+            f"(policy vs best_policy): {winrate_stats['win_rate']:.2%} "
+            f"(W/L/T: {winrate_stats['wins']}/{winrate_stats['losses']}/{winrate_stats['ties']})"
+        )
+        if winrate_stats["win_rate"] >= 0.5:
+            best_policy.load_state_dict(policy.state_dict())
+            print(f"Updated best_policy (win rate {winrate_stats['win_rate']:.2%}).")
+            save_best_checkpoint(best_checkpoint_path, episode + 1, winrate_stats["win_rate"])
+            print("Best policy checkpoint saved.")
 
         stats = ppo_update(processed_rollout_data)
 
