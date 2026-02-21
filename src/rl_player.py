@@ -89,13 +89,25 @@ async def main():
     ]
     team = RandomTeamFromPool(team_files)
     fmt = "gen9vgc2025regh"
+    tp_handler = TeamPreviewHandler()
+
+    # --- BEFORE BC: Untrained Policy Baseline ---
+    untrained_policy = PolicyNet() # Randomly initialized weights
+    untrained_player = RLPlayer(
+        policy=untrained_policy,
+        teampreview_handler=tp_handler,
+        account_configuration=AccountConfiguration("UntrainedPlayer", None),
+        battle_format=fmt,
+        server_configuration=LocalhostServerConfiguration,
+        max_concurrent_battles=2,
+        team=team,
+        accept_open_team_sheet=True,
+    )
 
     ppo_checkpoint_path = "C:/Users/oprea/Projects/vgc-rl/ppo_checkpoint.pt"
     ppo_checkpoint = torch.load(ppo_checkpoint_path)
     rl_policy = PolicyNet()
     rl_policy.load_state_dict(ppo_checkpoint["model_state_dict"])
-
-    tp_handler = TeamPreviewHandler()
 
     rl_player = RLPlayer(
         policy=rl_policy,
@@ -153,29 +165,42 @@ async def main():
     )
 
     # for statistics
-    await rl_player.battle_against(random_player, n_battles=10)
-    rand_wr = rl_player.win_rate
-    rl_player.reset_battles()
+    await untrained_player.battle_against(random_player, n_battles=50)
+    untrained_rand_wr = untrained_player.win_rate
+    untrained_player.reset_battles()
 
     print("FINISHED FIRST BATCH OF BATTLES")
 
-    await rl_player.battle_against(max_power_player, n_battles=10)
+    await untrained_player.battle_against(max_power_player, n_battles=50)
+    untrained_mbp_wr = untrained_player.win_rate
+    untrained_player.reset_battles()
+
+    await untrained_player.battle_against(simple_heuristics_player, n_battles=50)
+    untrained_sh_wr = untrained_player.win_rate
+    untrained_player.reset_battles()
+
+    '''
+    await rl_player.battle_against(random_player, n_battles=50)
+    rand_wr = rl_player.win_rate
+    rl_player.reset_battles()
+
+    await rl_player.battle_against(max_power_player, n_battles=50)
     mbp_wr = rl_player.win_rate
     rl_player.reset_battles()
 
-    await rl_player.battle_against(simple_heuristics_player, n_battles=10)
+    await rl_player.battle_against(simple_heuristics_player, n_battles=50)
     sh_wr = rl_player.win_rate
     rl_player.reset_battles()
 
-    await bc_player.battle_against(random_player, n_battles=10)
+    await bc_player.battle_against(random_player, n_battles=50)
     bc_rand_wr = bc_player.win_rate
     bc_player.reset_battles()
 
-    await bc_player.battle_against(max_power_player, n_battles=10)
+    await bc_player.battle_against(max_power_player, n_battles=50)
     bc_mbp_wr = bc_player.win_rate
     bc_player.reset_battles()
 
-    await bc_player.battle_against(simple_heuristics_player, n_battles=10)
+    await bc_player.battle_against(simple_heuristics_player, n_battles=50)
     bc_sh_wr = bc_player.win_rate
     bc_player.reset_battles()
 
@@ -185,9 +210,15 @@ async def main():
     print(f"BC Player Win rate vs RandomPlayer: {bc_rand_wr:.4%}")
     print(f"BC Player Win rate vs MaxBasePowerPlayer: {bc_mbp_wr:.4%}")
     print(f"BC Player Win rate vs SimpleHeuristicsPlayer: {bc_sh_wr:.4%}")
+    '''
+    print(f"Untrained Player Win rate vs RandomPlayer: {untrained_rand_wr:.4%}")
+    print(f"Untrained Player Win rate vs MaxBasePowerPlayer: {untrained_mbp_wr:.4%}")
+    print(f"Untrained Player Win rate vs SimpleHeuristicsPlayer: {untrained_sh_wr:.4%}")
 
     # Clean up
-    await rl_player.ps_client.stop_listening()
+    await untrained_player.ps_client.stop_listening()
+    # await rl_player.ps_client.stop_listening()
+    # await bc_player.ps_client.stop_listening()
     await random_player.ps_client.stop_listening()
     await max_power_player.ps_client.stop_listening()
     await simple_heuristics_player.ps_client.stop_listening()
