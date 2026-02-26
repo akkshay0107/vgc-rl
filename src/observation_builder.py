@@ -63,7 +63,7 @@ def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
 
     item_desc = (
         "Holds no item."
-        if (pokemon.item is None or pokemon.item == "")
+        if (pokemon.item is None or pokemon.item == "" or pokemon.item not in ITEM_DESCRIPTION)
         else ITEM_DESCRIPTION[pokemon.item]
     )
 

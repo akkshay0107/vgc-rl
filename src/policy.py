@@ -6,7 +6,6 @@ from torch.distributions import Categorical
 
 from cls_reducer import CLSReducer
 
-
 # Needs all inputs to be on the same device as the model
 class PolicyNet(nn.Module):
     def __init__(
@@ -161,7 +160,7 @@ class PolicyNet(nn.Module):
         return torch.stack(
             [
                 logits[:, 0],  # first row actions unchanged
-                logits[:, 1].masked_fill(~mask2, float("-inf")),  # masked row for second pokemon
+                logits[:, 1].masked_fill(~mask2.bool(), float("-inf")),  # masked row for second pokemon
             ],
             dim=1,
         )

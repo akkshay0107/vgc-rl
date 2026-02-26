@@ -12,7 +12,7 @@ from observation_builder import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 
 # Hyperparameters
-num_episodes = 1000
+num_episodes = 10
 gamma = 0.95
 gae_lambda = 0.98  # sparse reward counteraction
 lr = 1e-4
@@ -275,7 +275,7 @@ def main():
         print(f"  Time taken: {stats['time']:.4f} s")
         print("=" * 60)
 
-        if (episode + 1) % 50 == 0:
+        if (episode + 1) % 10 == 0:
             print(f"Saving checkpoint at episode {episode + 1}")
             save_checkpoint(checkpoint_path, episode + 1)
             print("Checkpoint saved.")
