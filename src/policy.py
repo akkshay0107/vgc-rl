@@ -141,7 +141,7 @@ class PolicyNet(nn.Module):
     def _apply_sequential_masks(
         self, logits: torch.Tensor, action1: torch.Tensor, action_mask: torch.Tensor
     ):
-        mask2 = action_mask[:, 1]  # using view of action mask
+        mask2 = action_mask[:, 1].bool()  # using view of action mask
         switch_mask = (1 <= action1) & (action1 <= 6)
         tera_mask = (26 < action1) & (action1 <= 46)
         pass_mask = action1 == 0
