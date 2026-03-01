@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader, Dataset
 
 from policy import PolicyNet
 
-
 # TODO: track WL rate against Random / MaxBasePower / SimpleHeuristic
 # before and after behaviour cloning and run the code for it
 class ReplayDataset(Dataset):
@@ -121,6 +120,13 @@ def train_behavior_cloning(replays_path):
 
     return policy
 
+def save_checkpoint(path, model, epoch):
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+    }
+    torch.save(checkpoint, path)
+
 
 if __name__ == "__main__":
     PATH_VAR = "C:/Users/oprea/Projects/vgc-rl/replays"  # replace with actual path
@@ -129,5 +135,6 @@ if __name__ == "__main__":
 
     if len(dataset) > 0:
         model = train_behavior_cloning(PATH_VAR)
+        save_checkpoint("C:/Users/oprea/Projects/vgc-rl/checkpoints/behavior_cloning_checkpoint.pt", model, 10)
     else:
         print("No data available for training.")
