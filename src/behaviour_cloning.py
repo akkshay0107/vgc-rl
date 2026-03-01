@@ -5,8 +5,9 @@ from torch.utils.data import DataLoader, Dataset
 
 from policy import PolicyNet
 
-# TODO: track WL rate against Random / MaxBasePower / SimpleHeuristic
-# before and after behaviour cloning and run the code for it
+
+# Loads all files from replays immediately
+# TODO: replace with lazy loading once we have larger replay datasets
 class ReplayDataset(Dataset):
     def __init__(self, replays_dir: str):
         self.samples = []
@@ -50,20 +51,15 @@ def train_behavior_cloning(replays_path):
         print("No data available for training.")
         return
 
-    """
-        Create train/val split.
-        Episode data is consisting of ~700 random files for 100 episodes.
-        Probably in cronological order with each file representing a turn.
-        So we can just do a simple split as random split would cause data leakage to occur.
-    """
     train_size = int(0.8 * len(dataset))
-    train_dataset = torch.utils.data.Subset(dataset, list(range(train_size)))
-    val_dataset = torch.utils.data.Subset(dataset, list(range(train_size, len(dataset))))
+    train_dataset = torch.utils.data.Subset(dataset, range(train_size))
+    val_dataset = torch.utils.data.Subset(dataset, range(train_size, len(dataset)))
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
     policy = PolicyNet()
+    device = policy.device
     optimizer = torch.optim.AdamW(policy.parameters(), lr=LEARNING_RATE, eps=1e-5)
 
     for epoch in range(NUM_EPOCHS):
@@ -74,9 +70,9 @@ def train_behavior_cloning(replays_path):
         train_total = 0
 
         for batch in train_loader:
-            obs = batch["obs"]
-            mask = batch["mask"]
-            target = batch["action"]
+            obs = batch["obs"].to(device)
+            mask = batch["mask"].to(device)
+            target = batch["action"].to(device)
 
             optimizer.zero_grad()
 
@@ -93,7 +89,12 @@ def train_behavior_cloning(replays_path):
                 train_total += target.shape[0] * 2  # two pokemon actions
                 train_correct += (preds == target).sum().item()
 
-        print(f"Training accuracy: {train_correct / train_total}")
+        if train_total > 0:
+            print(
+                f"Training accuracy: {train_correct / train_total:.4f} | Loss: {train_loss / len(train_loader):.4f}"
+            )
+        else:
+            print("Training set is empty.")
 
         policy.eval()
         val_loss = 0.0
@@ -102,9 +103,9 @@ def train_behavior_cloning(replays_path):
 
         with torch.no_grad():
             for batch in val_loader:
-                obs = batch["obs"]
-                mask = batch["mask"]
-                target = batch["action"]
+                obs = batch["obs"].to(device)
+                mask = batch["mask"].to(device)
+                target = batch["action"].to(device)
 
                 log_prob, _, _ = policy.evaluate_actions(obs, target, mask)
                 loss = -log_prob.mean()
@@ -115,26 +116,37 @@ def train_behavior_cloning(replays_path):
                 val_total += target.shape[0] * 2  # two pokemon actions
                 val_correct += (preds == target).sum().item()
 
-        print(f"Validation accuracy: {val_correct / val_total}")
+        if val_total > 0:
+            print(
+                f"Validation accuracy: {val_correct / val_total:.4f} | Loss: {val_loss / len(val_loader):.4f}"
+            )
+        else:
+            print("Validation set is empty.")
         print("")
 
     return policy
 
+
 def save_checkpoint(path, model, epoch):
     checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
     }
     torch.save(checkpoint, path)
 
 
 if __name__ == "__main__":
-    PATH_VAR = "C:/Users/oprea/Projects/vgc-rl/replays"  # replace with actual path
-    dataset = ReplayDataset(PATH_VAR)
-    loader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=0)
+    root_dir = Path(__file__).resolve().parent.parent
+    replays_dir = root_dir / "replays"
+    checkpoints_dir = root_dir / "checkpoints"
+    checkpoints_dir.mkdir(exist_ok=True, parents=True)
 
-    if len(dataset) > 0:
-        model = train_behavior_cloning(PATH_VAR)
-        save_checkpoint("C:/Users/oprea/Projects/vgc-rl/checkpoints/behavior_cloning_checkpoint.pt", model, 10)
-    else:
-        print("No data available for training.")
+    if not replays_dir.exists():
+        print(f"Replays directory not found: {replays_dir}")
+        exit(0)
+
+    model = train_behavior_cloning(str(replays_dir))
+    if model:
+        save_path = checkpoints_dir / "behavior_cloning_checkpoint.pt"
+        save_checkpoint(save_path, model, 10)
+        print(f"Checkpoint saved to {save_path}")

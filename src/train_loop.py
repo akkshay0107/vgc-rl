@@ -303,7 +303,6 @@ def compare_winrate(env, policy_a, policy_b, n_episodes=config.eval_episodes):
 
     wins_a = 0
     losses_a = 0
-    ties = 0
 
     for _ in range(n_episodes):
         obs, _ = env.reset()
@@ -338,17 +337,15 @@ def compare_winrate(env, policy_a, policy_b, n_episodes=config.eval_episodes):
                 r2 = rewards[env.agent2.username]
                 if r1 > r2:
                     wins_a += 1
-                elif r2 > r1:
-                    losses_a += 1
                 else:
-                    ties += 1
+                    losses_a += 1
                 break
 
             obs = next_obs
 
-    total = wins_a + losses_a + ties
+    total = wins_a + losses_a
     win_rate = wins_a / total if total > 0 else 0.0
-    return {"win_rate": win_rate, "wins": wins_a, "losses": losses_a, "ties": ties}
+    return {"win_rate": win_rate, "wins": wins_a, "losses": losses_a}
 
 
 def main():
@@ -363,20 +360,18 @@ def main():
 
     print(f"Starting training from episode {start + 1}")
     for episode in range(start, config.num_episodes):
-        print(f"Collecting rollout for episode {episode + 1}...")
+        print(f"Collecting rollout for episode {episode + 1}")
 
+        t0_rollout = time.time()
         buffer.reset()
         for _ in range(config.n_jobs):
             collect_rollout(env, buffer)
+        rollout_time = time.time() - t0_rollout
 
         processed_rollout_data = buffer.get_batches(policy.device)
 
         winrate_stats = compare_winrate(env, policy, best_policy)
-        print(
-            "Pre-update win rate "
-            f"(policy vs best_policy): {winrate_stats['win_rate']:.2%} "
-            f"(W/L/T: {winrate_stats['wins']}/{winrate_stats['losses']}/{winrate_stats['ties']})"
-        )
+
         if winrate_stats["win_rate"] >= config.best_update_threshold:
             best_policy.load_state_dict(policy.state_dict())
             print(f"Updated best_policy (win rate {winrate_stats['win_rate']:.2%}).")
@@ -389,11 +384,15 @@ def main():
 
         print("=" * 60)
         print(f"Episode {episode + 1}/{config.num_episodes}:")
+        print(
+            f"  Win Rate: {winrate_stats['win_rate']:.2%} (W/L: {winrate_stats['wins']}/{winrate_stats['losses']})"
+        )
+        print(f"  Rollout Time: {rollout_time:.4f} s")
         print(f"  Policy Loss: {stats['policy_loss']:.4f}")
         print(f"  Value Loss: {stats['value_loss']:.4f}")
         print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
         print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
-        print(f"  Time taken: {stats['time']:.4f} s")
+        print(f"  Update Time: {stats['time']:.4f} s")
         print("=" * 60)
 
         if (episode + 1) % 10 == 0:
