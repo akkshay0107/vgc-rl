@@ -1,5 +1,7 @@
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 import numpy as np
@@ -28,7 +30,6 @@ class PPOConfig:
     ppo_epochs: int = 4
 
     n_jobs: int = 4
-    eval_episodes: int = 10
     best_update_threshold: float = 0.55
 
     checkpoint_path: str = "ppo_checkpoint.pt"
@@ -36,6 +37,8 @@ class PPOConfig:
 
 
 config = PPOConfig()
+_inference_lock = threading.Lock()
+_buffer_lock = threading.Lock()
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
 best_policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
@@ -138,8 +141,9 @@ def load_checkpoint(path):
 
 def collect_rollout(env, buffer):
     policy.eval()
-
+    best_policy.eval()
     obs, _ = env.reset()
+    local_transitions = []
 
     while True:
         obs_agent1 = obs[env.agent1.username]
@@ -151,15 +155,16 @@ def collect_rollout(env, buffer):
         obs_batch = obs_agent1.unsqueeze(0).to(policy.device)
         action_mask_batch = action_mask_agent1.unsqueeze(0).to(policy.device)
 
-        with torch.no_grad():
-            _, log_probs, action1, values = policy(
-                obs_batch,
-                action_mask_batch,
-            )
-            _, _, action2, _ = best_policy(
-                obs_agent2.unsqueeze(0).to(best_policy.device),
-                action_mask_agent2.unsqueeze(0).to(best_policy.device),
-            )
+        with _inference_lock:
+            with torch.no_grad():
+                _, log_probs, action1, values = policy(
+                    obs_batch,
+                    action_mask_batch,
+                )
+                _, _, action2, _ = best_policy(
+                    obs_agent2.unsqueeze(0).to(best_policy.device),
+                    action_mask_agent2.unsqueeze(0).to(best_policy.device),
+                )
 
         action1_np = action1[0].cpu().numpy()
         action2_np = action2[0].cpu().numpy()
@@ -173,7 +178,7 @@ def collect_rollout(env, buffer):
         done1 = terminated[env.agent1.username] or truncated[env.agent1.username]
         done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
 
-        buffer.add(
+        local_transitions.append(
             {
                 "obs": obs_batch,
                 "actions": action1.to(policy.device),
@@ -192,6 +197,10 @@ def collect_rollout(env, buffer):
         obs = next_obs
         if done1 or done2:
             break
+
+    with _buffer_lock:
+        for t in local_transitions:
+            buffer.add(t)
 
 
 def ppo_update(rollout_data):
@@ -297,59 +306,22 @@ def ppo_update(rollout_data):
     }
 
 
-def compare_winrate(env, policy_a, policy_b, n_episodes=config.eval_episodes):
-    policy_a.eval()
-    policy_b.eval()
+def get_winrate(buffer: RolloutBuffer) -> dict[str, float | int]:
+    terminal_rewards = [r.item() for r, d in zip(buffer.rewards, buffer.dones) if d.item() == 1.0]
+    if not terminal_rewards:
+        return {"win_rate": 0.0, "wins": 0, "losses": 0}
 
-    wins_a = 0
-    losses_a = 0
-
-    for _ in range(n_episodes):
-        obs, _ = env.reset()
-        while True:
-            obs_agent1 = obs[env.agent1.username]
-            obs_agent2 = obs[env.agent2.username]
-
-            action_mask_agent1 = observation_builder.get_action_mask(env.battle1)
-            action_mask_agent2 = observation_builder.get_action_mask(env.battle2)
-
-            with torch.no_grad():
-                _, _, action1, _ = policy_a(
-                    obs_agent1.unsqueeze(0).to(policy_a.device),
-                    action_mask_agent1.unsqueeze(0).to(policy_a.device),
-                )
-                _, _, action2, _ = policy_b(
-                    obs_agent2.unsqueeze(0).to(policy_b.device),
-                    action_mask_agent2.unsqueeze(0).to(policy_b.device),
-                )
-
-            actions = {
-                env.agent1.username: action1[0].cpu().numpy(),
-                env.agent2.username: action2[0].cpu().numpy(),
-            }
-
-            next_obs, rewards, terminated, truncated, _ = env.step(actions)
-            done1 = terminated[env.agent1.username] or truncated[env.agent1.username]
-            done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
-
-            if done1 or done2:
-                r1 = rewards[env.agent1.username]
-                r2 = rewards[env.agent2.username]
-                if r1 > r2:
-                    wins_a += 1
-                else:
-                    losses_a += 1
-                break
-
-            obs = next_obs
-
-    total = wins_a + losses_a
-    win_rate = wins_a / total if total > 0 else 0.0
-    return {"win_rate": win_rate, "wins": wins_a, "losses": losses_a}
+    wins = sum(1 for r in terminal_rewards if r > 0)
+    losses = sum(1 for r in terminal_rewards if r < 0)
+    return {
+        "win_rate": wins / len(terminal_rewards),
+        "wins": wins,
+        "losses": losses,
+    }
 
 
 def main():
-    env = SimEnv.build_env()
+    envs = [SimEnv.build_env(env_id=i) for i in range(config.n_jobs)]
     buffer = RolloutBuffer()
 
     start = load_checkpoint(config.checkpoint_path) or 0
@@ -364,13 +336,16 @@ def main():
 
         t0_rollout = time.time()
         buffer.reset()
-        for _ in range(config.n_jobs):
-            collect_rollout(env, buffer)
-        rollout_time = time.time() - t0_rollout
 
+        with ThreadPoolExecutor(max_workers=config.n_jobs) as executor:
+            futures = [executor.submit(collect_rollout, env, buffer) for env in envs]
+            for f in as_completed(futures):
+                f.result()  # re-raises any exception from worker threads
+
+        rollout_time = time.time() - t0_rollout
         processed_rollout_data = buffer.get_batches(policy.device)
 
-        winrate_stats = compare_winrate(env, policy, best_policy)
+        winrate_stats = get_winrate(buffer)
 
         if winrate_stats["win_rate"] >= config.best_update_threshold:
             best_policy.load_state_dict(policy.state_dict())

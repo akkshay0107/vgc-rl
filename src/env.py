@@ -325,13 +325,15 @@ class SimEnv(Gen9VGCEnv):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def build_env(cls):
+    def build_env(cls, env_id: int = 0):
         teams_dir = "./teams"
         team_files = [
             path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
         ]
         team = RandomTeamFromPool(team_files)
         return cls(
+            account_configuration1=AccountConfiguration(f"TrainAgent_{env_id}", None),
+            account_configuration2=AccountConfiguration(f"BestAgent_{env_id}", None),
             battle_format="gen9vgc2025regh",
             accept_open_team_sheet=True,
             start_timer_on_battle_start=True,
