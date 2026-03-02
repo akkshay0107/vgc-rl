@@ -1,4 +1,5 @@
 import os
+import queue
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,6 +19,9 @@ from policy import PolicyNet
 @dataclass
 class PPOConfig:
     num_episodes: int = 10
+    n_jobs: int = 8
+    rollouts_per_episode: int = 16
+
     gamma: float = 0.95
     gae_lambda: float = 0.98  # sparse reward counteraction
     lr: float = 1e-4
@@ -29,9 +33,7 @@ class PPOConfig:
     target_kl: float = 0.015
     ppo_epochs: int = 4
 
-    n_jobs: int = 4
     best_update_threshold: float = 0.55
-
     checkpoint_path: str = "ppo_checkpoint.pt"
     best_checkpoint_path: str = "ppo_best_checkpoint.pt"
 
@@ -203,6 +205,24 @@ def collect_rollout(env, buffer):
             buffer.add(t)
 
 
+def collect_all_rollouts(envs, buffer):
+    env_queue = queue.Queue()
+    for env in envs:
+        env_queue.put(env)
+
+    def worker():
+        env = env_queue.get()
+        try:
+            collect_rollout(env, buffer)
+        finally:
+            env_queue.put(env)
+
+    with ThreadPoolExecutor(max_workers=config.n_jobs) as executor:
+        futures = [executor.submit(worker) for _ in range(config.rollouts_per_episode)]
+        for f in as_completed(futures):
+            f.result()
+
+
 def ppo_update(rollout_data):
     policy.train()
     t0 = time.time()
@@ -306,7 +326,7 @@ def ppo_update(rollout_data):
     }
 
 
-def get_winrate(buffer: RolloutBuffer) -> dict[str, float | int]:
+def get_winrate(buffer: RolloutBuffer):
     terminal_rewards = [r.item() for r, d in zip(buffer.rewards, buffer.dones) if d.item() == 1.0]
     if not terminal_rewards:
         return {"win_rate": 0.0, "wins": 0, "losses": 0}
@@ -336,15 +356,9 @@ def main():
 
         t0_rollout = time.time()
         buffer.reset()
-
-        with ThreadPoolExecutor(max_workers=config.n_jobs) as executor:
-            futures = [executor.submit(collect_rollout, env, buffer) for env in envs]
-            for f in as_completed(futures):
-                f.result()  # re-raises any exception from worker threads
-
+        collect_all_rollouts(envs, buffer)
         rollout_time = time.time() - t0_rollout
         processed_rollout_data = buffer.get_batches(policy.device)
-
         winrate_stats = get_winrate(buffer)
 
         if winrate_stats["win_rate"] >= config.best_update_threshold:

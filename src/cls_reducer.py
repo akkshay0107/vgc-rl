@@ -47,7 +47,7 @@ class CLSReducer(nn.Module):
             activation="gelu",
         )
         self.encoder = nn.TransformerEncoder(
-            enc_layer, num_layers=nlayer
+            enc_layer, num_layers=nlayer, enable_nested_tensor=False # annoying warning
         )
 
         type_ids, part_ids = self._build_ids()
