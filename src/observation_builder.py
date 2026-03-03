@@ -1,5 +1,3 @@
-import json
-
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.battle.effect import Effect
@@ -29,8 +27,10 @@ NUM_TARGETS = 5
 NUM_GIMMICKS = 1
 ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = BertTokenizerFast.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
-model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(device)  # type: ignore
+model.eval()
 
 
 def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
@@ -56,10 +56,7 @@ def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
 
     pokemon_desc = POKEMON_DESCRIPTION[id]
 
-    def get_move_desc(move: str, desc) -> str:
-        return move + ":" + json.dumps(desc, separators=(",", ":"))
-
-    moves_desc = " ".join([get_move_desc(move, MOVES[move]) for move in movelist])
+    moves_desc = " ".join([move + ":" + MOVES[move] for move in movelist])
 
     item_desc = (
         "Holds no item."

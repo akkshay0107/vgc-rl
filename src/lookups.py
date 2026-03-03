@@ -113,7 +113,8 @@ EFFECT_DESCRIPTION = {
 MOVE_PATH = Path(__file__).parent.parent / "data" / "moves.json"
 
 with MOVE_PATH.open() as f:
-    MOVES = json.load(f)
+    _MOVES_RAW = json.load(f)
+    MOVES = {k: json.dumps(v, separators=(",", ":")) for k, v in _MOVES_RAW.items()}
 
 
 if __name__ == "__main__":
