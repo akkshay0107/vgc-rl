@@ -104,7 +104,8 @@ async def main():
         accept_open_team_sheet=True,
     )
 
-    ppo_checkpoint_path = "C:/Users/oprea/Projects/vgc-rl/ppo_checkpoint.pt"
+    root_dir = Path(__file__).resolve().parent.parent
+    ppo_checkpoint_path = root_dir / "checkpoints" / "ppo_checkpoint.pt"
     ppo_checkpoint = torch.load(ppo_checkpoint_path)
     rl_policy = PolicyNet()
     rl_policy.load_state_dict(ppo_checkpoint["model_state_dict"])
@@ -120,7 +121,7 @@ async def main():
         accept_open_team_sheet=True,
     )
 
-    bc_checkpoint_path = "C:/Users/oprea/Projects/vgc-rl/behavior_cloning_checkpoint.pt"
+    bc_checkpoint_path = root_dir / "checkpoints" / "behavior_cloning_checkpoint.pt"
     bc_checkpoint = torch.load(bc_checkpoint_path)
     bc_policy = PolicyNet()
     bc_policy.load_state_dict(bc_checkpoint["model_state_dict"])

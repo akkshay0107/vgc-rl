@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-from encoder import ACT_SIZE, OBS_DIM
 from torch.distributions import Categorical
 
 from cls_reducer import CLSReducer
+from constants import ACT_SIZE, OBS_DIM
 
 # Needs all inputs to be on the same device as the model
 class PolicyNet(nn.Module):

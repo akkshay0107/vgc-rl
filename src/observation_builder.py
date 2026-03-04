@@ -9,6 +9,7 @@ from poke_env.battle.side_condition import SideCondition
 from poke_env.battle.weather import Weather
 from transformers import BertModel, BertTokenizerFast
 
+from constants import ACT_SIZE, EXTRA_SZ, OBS_DIM, TINYBERT_SZ
 from lookups import (
     EFFECT_DESCRIPTION,
     ITEM_DESCRIPTION,
@@ -17,17 +18,6 @@ from lookups import (
     POKEMON_DESCRIPTION,
     STATUS_DESCRIPTION,
 )
-
-TINYBERT_SZ = 624
-EXTRA_SZ = 28
-OBS_DIM = (38, TINYBERT_SZ)  # 1 field row + 1 info row + 3 tokens * 12 pokemon
-
-# Define action space parameters (from gen9vgcenv.py)
-NUM_SWITCHES = 6
-NUM_MOVES = 4
-NUM_TARGETS = 5
-NUM_GIMMICKS = 1
-ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = BertTokenizerFast.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")

@@ -4,7 +4,7 @@ from pathlib import Path
 from poke_env.battle.effect import Effect
 from poke_env.battle.status import Status
 
-# janky way to fetch the 36 pokemon in the game
+# janky way to fetch the 36 pre selected pokemon
 # TODO: update this to have a more flexible pokemon description fetch
 # maybe use the pokemon base species, ability, item and move set to
 # create a hash that has a description for it
@@ -60,7 +60,7 @@ POKEMON_DESCRIPTION = {
     8: "Indeedee-F with Psychic Surge, which sets up Psychic Terrain when it enters the battle. Max Defense and significant investment in HP with a Relaxed nature and 0 Speed IVs make it a bulky Trick Room setter and supporter.",
     9: "Torkoal with Drought, which sets up sun when it enters the battle. Max HP and Special Attack with a Quiet nature and 0 Speed IVs make it a powerful Trick Room attacker that can abuse sun-boosted Fire-type moves.",
     10: "Ursaluna with Guts, which boosts its Attack by 1.5x when it has a status condition. Max HP and Attack with a Brave nature and 0 Speed IVs make it a powerful Trick Room attacker, especially when combined with the Flame Orb.",
-    11: "Ga    print(len(ITEM_DESCRIPTIONS))llade with Sharpness, which boosts the power of slicing moves by 1.5x. Max Attack and significant investment in HP with a Brave nature and 0 Speed IVs make it a powerful Trick Room attacker.",
+    11: "Gallade with Sharpness, which boosts the power of slicing moves by 1.5x. Max Attack and significant investment in HP with a Brave nature and 0 Speed IVs make it a powerful Trick Room attacker.",
     12: "Maushold with Technician, which boosts the power of moves with 60 or less base power by 1.5x. Max Attack and Speed with a Jolly nature make it a fast attacker that can abuse Population Bomb.",
     13: "Dragonite with Multiscale, which halves damage taken when at full HP. Max Speed and high Attack with an Adamant nature make it a fast and powerful attacker.",
     14: "Gholdengo with Good as Gold, which makes it immune to status moves. Max Speed and significant investment in Special Attack and HP with a Timid nature make it a fast special attacker.",

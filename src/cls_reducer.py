@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-from observation_builder import OBS_DIM
+from constants import OBS_DIM
 
 
 class CLSReducer(nn.Module):
@@ -47,7 +47,9 @@ class CLSReducer(nn.Module):
             activation="gelu",
         )
         self.encoder = nn.TransformerEncoder(
-            enc_layer, num_layers=nlayer, enable_nested_tensor=False # annoying warning
+            enc_layer,
+            num_layers=nlayer,
+            enable_nested_tensor=False,  # annoying warning
         )
 
         type_ids, part_ids = self._build_ids()
