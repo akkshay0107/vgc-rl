@@ -20,9 +20,9 @@ from policy import PolicyNet
 class PPOConfig:
     num_episodes: int = 10
     n_jobs: int = 8
-    rollouts_per_episode: int = 16
+    rollouts_per_episode: int = 64
 
-    gamma: float = 0.95
+    gamma: float = 0.96  # effective horizon = ~25 turns
     gae_lambda: float = 0.98  # sparse reward counteraction
     lr: float = 1e-4
     batch_size: int = 64

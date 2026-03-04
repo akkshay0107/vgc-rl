@@ -331,7 +331,7 @@ def _encode_one(text: str):
     )
     enc = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
     # cls mean concat
-    with torch.no_grad():
+    with torch.inference_mode():
         out = model(**enc).last_hidden_state[0]
         cls = out[0]
         mask = enc["attention_mask"][0].unsqueeze(-1)
