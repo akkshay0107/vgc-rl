@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.battle.effect import Effect
@@ -318,6 +320,30 @@ def _get_info_text(p1_tera: Pokemon | None, p2_tera: Pokemon | None) -> str:
     return p1_str + p2_str
 
 
+@lru_cache(maxsize=200_000)
+def _encode_one(text: str):
+    enc = tokenizer(
+        text,
+        max_length=512,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt",
+    )
+    enc = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
+    # cls mean concat
+    with torch.no_grad():
+        out = model(**enc).last_hidden_state[0]
+        cls = out[0]
+        mask = enc["attention_mask"][0].unsqueeze(-1)
+        mean = (out * mask).sum(0) / mask.sum(0).clamp(min=1)
+        emb = torch.cat([cls, mean], dim=-1)
+    return emb.float().cpu()
+
+
+def encode_texts(texts: list[str]):
+    return torch.stack([_encode_one(t) for t in texts], dim=0)
+
+
 def from_battle(battle: AbstractBattle):
     assert isinstance(battle, DoubleBattle)
     if battle.teampreview:
@@ -340,34 +366,9 @@ def from_battle(battle: AbstractBattle):
 
     info_txt = _get_info_text(p1_tera, opp_tera)
 
-    # combine the stuff above into one observation
-    # row 0: pad p1 and opp locals into a string
-    # row 1: extra information (for now tera usage)
-    # row 2-25: 2 rows per pokemon in players team and opponents team (text)
-    # row 26-37: 1 rows per pokemon in players team and opponents team (numeric)
     p1_flat = [text for pair in p1_txt for text in pair]
     opp_flat = [text for pair in opp_txt for text in pair]
-    text_inputs = [field_txt, info_txt, *p1_flat, *opp_flat]
-
-    # cls mean concat
-    encoded = tokenizer(
-        text_inputs,
-        max_length=512,
-        padding="max_length",
-        truncation=True,
-        return_tensors="pt",
-    )
-    with torch.no_grad():
-        outputs = model(**encoded)
-    last_hidden = outputs.last_hidden_state  # (26, seq_len, 312)
-    cls_emb = last_hidden[:, 0, :]  # (26, 312)
-    # Exclude padding tokens for mean pooling
-    mask = encoded["attention_mask"].unsqueeze(-1)  # (26, seq_len, 1)
-    masked_hidden = last_hidden * mask
-    sum_hidden = masked_hidden.sum(dim=1)
-    len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
-    mean_emb = sum_hidden / len_nonpad  # (26, 312)
-    text_emb = torch.cat([cls_emb, mean_emb], dim=-1)  # (26, 624)
+    text_emb = encode_texts([field_txt, info_txt, *p1_flat, *opp_flat])
 
     num_emb = torch.tensor(p1_arr + opp_arr)
     num_emb = torch.cat([num_emb, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)
