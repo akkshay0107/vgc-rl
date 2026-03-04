@@ -1,7 +1,4 @@
-import queue
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +16,7 @@ from policy import PolicyNet
 @dataclass
 class PPOConfig:
     num_episodes: int = 10
-    n_jobs: int = 2
+    # n_jobs: int = 2 (not required for the single threaded variant)
     rollouts_per_episode: int = 64
 
     gamma: float = 0.96  # effective horizon = ~25 turns
@@ -41,8 +38,6 @@ class PPOConfig:
 
 
 config = PPOConfig()
-_inference_lock = threading.Lock()
-_buffer_lock = threading.Lock()
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
 best_policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
@@ -157,16 +152,15 @@ def collect_rollout(env, buffer):
         obs_batch = obs_agent1.unsqueeze(0).to(policy.device)
         action_mask_batch = action_mask_agent1.unsqueeze(0).to(policy.device)
 
-        with _inference_lock:
-            with torch.no_grad():
-                _, log_probs, action1, values = policy(
-                    obs_batch,
-                    action_mask_batch,
-                )
-                _, _, action2, _ = best_policy(
-                    obs_agent2.unsqueeze(0).to(best_policy.device),
-                    action_mask_agent2.unsqueeze(0).to(best_policy.device),
-                )
+        with torch.no_grad():
+            _, log_probs, action1, values = policy(
+                obs_batch,
+                action_mask_batch,
+            )
+            _, _, action2, _ = best_policy(
+                obs_agent2.unsqueeze(0).to(best_policy.device),
+                action_mask_agent2.unsqueeze(0).to(best_policy.device),
+            )
 
         action1_np = action1[0].cpu().numpy()
         action2_np = action2[0].cpu().numpy()
@@ -199,26 +193,8 @@ def collect_rollout(env, buffer):
         if done1 or done2:
             break
 
-    with _buffer_lock:
-        for t in local_transitions:
-            buffer.add(t)
-
-
-def collect_all_rollouts(envs, buffer, executor):
-    env_queue = queue.Queue()
-    for env in envs:
-        env_queue.put(env)
-
-    def worker():
-        env = env_queue.get()
-        try:
-            collect_rollout(env, buffer)
-        finally:
-            env_queue.put(env)
-
-    futures = [executor.submit(worker) for _ in range(config.rollouts_per_episode)]
-    for f in as_completed(futures):
-        f.result()
+    for t in local_transitions:
+        buffer.add(t)
 
 
 def ppo_update(rollout_data):
@@ -339,64 +315,60 @@ def get_winrate(buffer: RolloutBuffer):
 
 
 def main():
-    envs = [SimEnv.build_env(env_id=i) for i in range(config.n_jobs)]
+    env = SimEnv.build_env(env_id=0)
     buffer = RolloutBuffer()
-    executor = ThreadPoolExecutor(max_workers=config.n_jobs)
 
-    # to guarantee executor shutdown
-    try:
-        start = load_checkpoint(config.checkpoint_path) or 0
-        best_policy.load_state_dict(policy.state_dict())
-        if config.best_checkpoint_path.exists():
-            best_checkpoint = torch.load(
-                config.best_checkpoint_path, map_location=best_policy.device
+    start = load_checkpoint(config.checkpoint_path) or 0
+    best_policy.load_state_dict(policy.state_dict())
+    if config.best_checkpoint_path.exists():
+        best_checkpoint = torch.load(config.best_checkpoint_path, map_location=best_policy.device)
+        best_policy.load_state_dict(best_checkpoint["model_state_dict"])
+
+    print(f"Starting training from episode {start + 1}")
+    for episode in range(start, config.num_episodes):
+        print(f"Collecting rollout for episode {episode + 1}")
+
+        t0_rollout = time.time()
+        buffer.reset()
+
+        policy.eval()
+        best_policy.eval()
+
+        # sequential collection
+        for _ in range(config.rollouts_per_episode):
+            collect_rollout(env, buffer)
+
+        rollout_time = time.time() - t0_rollout
+        processed_rollout_data = buffer.get_batches(policy.device)
+        winrate_stats = get_winrate(buffer)
+
+        if winrate_stats["win_rate"] >= config.best_update_threshold:
+            best_policy.load_state_dict(policy.state_dict())
+            print(f"Updated best_policy (win rate {winrate_stats['win_rate']:.2%}).")
+            save_best_checkpoint(
+                config.best_checkpoint_path, episode + 1, winrate_stats["win_rate"]
             )
-            best_policy.load_state_dict(best_checkpoint["model_state_dict"])
+            print("Best policy checkpoint saved.")
 
-        print(f"Starting training from episode {start + 1}")
-        for episode in range(start, config.num_episodes):
-            print(f"Collecting rollout for episode {episode + 1}")
+        stats = ppo_update(processed_rollout_data)
 
-            t0_rollout = time.time()
-            buffer.reset()
+        print("=" * 60)
+        print(f"Episode {episode + 1}/{config.num_episodes}:")
+        print(
+            f"  Win Rate: {winrate_stats['win_rate']:.2%} (W/L: {winrate_stats['wins']}/{winrate_stats['losses']})"
+        )
+        print(f"  Rollout Time: {rollout_time:.4f} s")
+        print(f"  Policy Loss: {stats['policy_loss']:.4f}")
+        print(f"  Value Loss: {stats['value_loss']:.4f}")
+        print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
+        print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
+        print(f"  Update Time: {stats['time']:.4f} s")
+        print("=" * 60)
 
-            policy.eval()
-            best_policy.eval()
-            collect_all_rollouts(envs, buffer, executor)
-
-            rollout_time = time.time() - t0_rollout
-            processed_rollout_data = buffer.get_batches(policy.device)
-            winrate_stats = get_winrate(buffer)
-
-            if winrate_stats["win_rate"] >= config.best_update_threshold:
-                best_policy.load_state_dict(policy.state_dict())
-                print(f"Updated best_policy (win rate {winrate_stats['win_rate']:.2%}).")
-                save_best_checkpoint(
-                    config.best_checkpoint_path, episode + 1, winrate_stats["win_rate"]
-                )
-                print("Best policy checkpoint saved.")
-
-            stats = ppo_update(processed_rollout_data)
-
-            print("=" * 60)
-            print(f"Episode {episode + 1}/{config.num_episodes}:")
-            print(
-                f"  Win Rate: {winrate_stats['win_rate']:.2%} (W/L: {winrate_stats['wins']}/{winrate_stats['losses']})"
-            )
-            print(f"  Rollout Time: {rollout_time:.4f} s")
-            print(f"  Policy Loss: {stats['policy_loss']:.4f}")
-            print(f"  Value Loss: {stats['value_loss']:.4f}")
-            print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
-            print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
-            print(f"  Update Time: {stats['time']:.4f} s")
-            print("=" * 60)
-
-            if (episode + 1) % 10 == 0:
-                print(f"Saving checkpoint at episode {episode + 1}")
-                save_checkpoint(config.checkpoint_path, episode + 1)
-                print("Checkpoint saved.")
-    finally:
-        executor.shutdown(wait=True)
+        if (episode + 1) % 10 == 0:
+            print(f"Saving checkpoint at episode {episode + 1}")
+            save_checkpoint(config.checkpoint_path, episode + 1)
+            print("Checkpoint saved.")
 
 
 if __name__ == "__main__":
