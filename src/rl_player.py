@@ -1,17 +1,13 @@
-import asyncio
-from pathlib import Path
-
 import torch
-from poke_env import AccountConfiguration, LocalhostServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
-from poke_env.player import DefaultBattleOrder, MaxBasePowerPlayer, Player, RandomPlayer, SimpleHeuristicsPlayer
+from poke_env.player import DefaultBattleOrder, Player
 from torch.distributions import Categorical
 
 import observation_builder
 from env import Gen9VGCEnv
 from policy import PolicyNet
 from teampreview import TeamPreviewHandler
-from teams import RandomTeamFromPool
+
 
 class RLPlayer(Player):
     """

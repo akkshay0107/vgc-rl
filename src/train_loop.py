@@ -13,11 +13,11 @@ from constants import ACT_SIZE, OBS_DIM
 from env import SimEnv
 from policy import PolicyNet
 from ppo_utils import (
+    OpponentPool,
     PPOConfig,
     RolloutBuffer,
     get_winrate,
     load_checkpoint,
-    save_best_checkpoint,
     save_checkpoint,
 )
 
@@ -25,20 +25,21 @@ config = PPOConfig()
 _buffer_lock = threading.Lock()
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
-best_policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
 optimizer = optim.AdamW(policy.parameters(), lr=config.lr, eps=1e-5)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_episodes, eta_min=1e-6)
 
 if policy.device.type == "cuda":
     policy.compile()
 
-if best_policy.device.type == "cuda":
-    best_policy.compile()
 
+def collect_rollout(env, buffer, opponent_policy: PolicyNet, opponent_id: str) -> bool:
+    """Run one full battle episode.
 
-def collect_rollout(env, buffer):
+    Returns True if the training agent (agent1) won, False otherwise.
+    """
     obs, _ = env.reset()
     local_transitions = []
+    agent1_won = False
 
     while True:
         obs_agent1 = obs[env.agent1.username]
@@ -55,9 +56,9 @@ def collect_rollout(env, buffer):
                 obs_batch,
                 action_mask_batch,
             )
-            _, _, action2, _ = best_policy(
-                obs_agent2.unsqueeze(0).to(best_policy.device),
-                action_mask_agent2.unsqueeze(0).to(best_policy.device),
+            _, _, action2, _ = opponent_policy(
+                obs_agent2.unsqueeze(0).to(opponent_policy.device),
+                action_mask_agent2.unsqueeze(0).to(opponent_policy.device),
             )
 
         action1_np = action1[0].cpu().numpy()
@@ -72,45 +73,59 @@ def collect_rollout(env, buffer):
         done1 = terminated[env.agent1.username] or truncated[env.agent1.username]
         done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
 
+        reward1 = rewards[env.agent1.username]
         local_transitions.append(
             {
                 "obs": obs_batch.cpu(),
                 "actions": action1.cpu(),
                 "log_probs": log_probs.cpu(),
                 "values": values.cpu(),
-                "rewards": torch.tensor(
-                    [rewards[env.agent1.username]],
-                    dtype=torch.float32,
-                ),
+                "rewards": torch.tensor([reward1], dtype=torch.float32),
                 "dones": torch.tensor([done1], dtype=torch.float32),
                 "action_masks": action_mask_batch.cpu(),
             }
         )
 
-        obs = next_obs
         if done1 or done2:
+            agent1_won = reward1 > 0
             break
+
+        obs = next_obs
 
     with _buffer_lock:
         for t in local_transitions:
             buffer.add(t)
 
+    return agent1_won
 
-def collect_all_rollouts(envs, buffer, executor):
+
+def collect_all_rollouts(envs, buffer, executor, pool: OpponentPool):
+    """Collect config.rollouts_per_episode rollouts in parallel.
+
+    Each rollout samples a (potentially different) opponent from the pool,
+    giving maximum diversity within a single episode.
+    """
     env_queue = queue.Queue()
     for env in envs:
         env_queue.put(env)
 
-    def worker():
+    # Pre-sample one opponent per rollout slot.
+    sampled_opponents = [pool.sample() for _ in range(config.rollouts_per_episode)]
+
+    def worker(opponent_policy: PolicyNet, opponent_id: str):
         env = env_queue.get()
         try:
-            collect_rollout(env, buffer)
+            won = collect_rollout(env, buffer, opponent_policy, opponent_id)
+            return opponent_id, won
         finally:
             env_queue.put(env)
 
-    futures = [executor.submit(worker) for _ in range(config.rollouts_per_episode)]
+    futures = [
+        executor.submit(worker, opp_policy, opp_id) for opp_policy, opp_id in sampled_opponents
+    ]
     for f in as_completed(futures):
-        f.result()
+        opp_id, won = f.result()
+        pool.update_win_rate(opp_id, won)
 
 
 def ppo_update(rollout_data):
@@ -224,11 +239,17 @@ def main():
     # to guarantee executor shutdown
     try:
         start = load_checkpoint(config.checkpoint_path, policy, optimizer, scheduler) or 0
-        best_policy.load_state_dict(policy.state_dict())
-        if config.best_checkpoint_path.exists():
-            load_checkpoint(config.best_checkpoint_path, best_policy)
+
+        pool = OpponentPool.load_or_create(config.pool_dir, config)
+        if len(pool) == 0:
+            # Seed the pool with the initial (possibly pretrained) policy.
+            print("Opponent pool is empty — adding initial policy as first seed.")
+            pool.add(policy, "ep0")
+            pool.save_state()
 
         print(f"Starting training from episode {start + 1}")
+        print(f"Opponent pool: {pool}")
+
         for episode in range(start, config.num_episodes):
             print(f"Collecting rollout for episode {episode + 1}")
 
@@ -236,24 +257,28 @@ def main():
             buffer.reset()
 
             policy.eval()
-            best_policy.eval()
-            collect_all_rollouts(envs, buffer, executor)
+            collect_all_rollouts(envs, buffer, executor, pool)
 
             rollout_time = time.time() - t0_rollout
             processed_rollout_data = buffer.get_batches(policy.device, config)
             winrate_stats = get_winrate(buffer)
 
-            if winrate_stats["win_rate"] >= config.best_update_threshold:
-                best_policy.load_state_dict(policy.state_dict())
-                print(f"Updated best_policy (win rate {winrate_stats['win_rate']:.2%}).")
-                save_best_checkpoint(
-                    config.best_checkpoint_path, episode + 1, winrate_stats["win_rate"], best_policy
-                )
-                print("Best policy checkpoint saved.")
+            # Snapshot the current policy into the pool periodically.
+            if (episode + 1) % config.snapshot_interval == 0:
+                snap_id = f"ep{episode + 1}"
+                pool.add(policy, snap_id)
+                pool.save_state()
+                print(f"Snapshot '{snap_id}' added to opponent pool. Pool: {pool}")
 
             stats = ppo_update(processed_rollout_data)
             scheduler.step()
             del processed_rollout_data
+
+            # Log per-opponent win-rates every 10 episodes.
+            if (episode + 1) % 10 == 0:
+                print("  Opponent win-rates (training policy vs pool):")
+                for oid, wr in pool.win_rates.items():
+                    print(f"    {oid}: {wr:.2%}")
 
             print("=" * 60)
             print(f"Episode {episode + 1}/{config.num_episodes}:")

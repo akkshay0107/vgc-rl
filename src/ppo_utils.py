@@ -1,9 +1,14 @@
+import functools
+import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 
 import torch
 
 from constants import ACT_SIZE, OBS_DIM
+from policy import PolicyNet
 
 
 @dataclass
@@ -23,11 +28,15 @@ class PPOConfig:
     target_kl: float = 0.015
     ppo_epochs: int = 4
 
-    best_update_threshold: float = 0.54
     checkpoint_path: Path = Path(__file__).parent.parent / "checkpoints" / "ppo_checkpoint.pt"
-    best_checkpoint_path: Path = (
-        Path(__file__).parent.parent / "checkpoints" / "ppo_best_checkpoint.pt"
-    )
+    pool_dir: Path = Path(__file__).parent.parent / "checkpoints" / "pool"
+    pool_size: int = 10
+    snapshot_interval: int = 10
+    # EMA smoothing factor for per-opponent win-rate tracking (lower = smoother).
+    pool_win_rate_smoothing: float = 0.1
+    # Minimum sampling weight for any opponent (prevents starvation).
+    min_pool_win_rate_weight: float = 0.1
+    pool_cache_size: int = 5
 
 
 class RolloutBuffer:
@@ -105,7 +114,7 @@ def get_winrate(buffer: RolloutBuffer):
     }
 
 
-def save_checkpoint(path, episode, policy, optimizer=None, scheduler=None):
+def save_checkpoint(path: Path, episode: int, policy: PolicyNet, optimizer=None, scheduler=None):
     state = {
         "episode": episode,
         "model_state_dict": policy.state_dict(),
@@ -117,7 +126,7 @@ def save_checkpoint(path, episode, policy, optimizer=None, scheduler=None):
     torch.save(state, path)
 
 
-def save_best_checkpoint(path, episode, win_rate, policy):
+def save_best_checkpoint(path: Path, episode: int, win_rate: float, policy: PolicyNet):
     state = {
         "episode": episode,
         "win_rate": win_rate,
@@ -126,7 +135,7 @@ def save_best_checkpoint(path, episode, win_rate, policy):
     torch.save(state, path)
 
 
-def load_checkpoint(path, policy, optimizer=None, scheduler=None):
+def load_checkpoint(path: Path, policy: PolicyNet, optimizer=None, scheduler=None):
     if not path.exists():
         return None
     checkpoint = torch.load(path, map_location=policy.device)
@@ -136,3 +145,94 @@ def load_checkpoint(path, policy, optimizer=None, scheduler=None):
     if scheduler is not None and "scheduler_state_dict" in checkpoint:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     return checkpoint.get("episode", None)
+
+
+# AlphaStar style pool of checkpoints for diverse training
+class OpponentPool:
+    def __init__(self, pool_dir: Path, config: PPOConfig):
+        self.pool_dir = pool_dir
+        self.pool_dir.mkdir(parents=True, exist_ok=True)
+        self.config = config
+        # Ordered list of opponent ids (strings); first = oldest.
+        self.opponent_ids: list[str] = []
+        # EMA win-rate of the training policy against each opponent.
+        # Starts at 0.5 (neutral) for newly added opponents.
+        self.win_rates: dict[str, float] = {}
+        # LRU cache wrapper for loading policies
+        self._load_policy_cached = functools.lru_cache(maxsize=config.pool_cache_size)(
+            self._load_policy_impl
+        )
+
+    def save_state(self) -> None:
+        state = {
+            "opponent_ids": self.opponent_ids,
+            "win_rates": self.win_rates,
+        }
+        with open(self.pool_dir / "pool_state.json", "w") as f:
+            json.dump(state, f, indent=2)
+
+    def _load_state(self) -> None:
+        path = self.pool_dir / "pool_state.json"
+        if not path.exists():
+            return
+        with open(path) as f:
+            state = json.load(f)
+        self.opponent_ids = state.get("opponent_ids", [])
+        self.win_rates = state.get("win_rates", {})
+
+    @classmethod
+    def load_or_create(cls, pool_dir: Path, config: PPOConfig) -> Self:
+        """Load an existing pool from disk, or create an empty one."""
+        pool = cls(pool_dir, config)
+        pool._load_state()
+        return pool
+
+    def add(self, policy: PolicyNet, opponent_id: str) -> None:
+        # Evict oldest if at capacity.
+        while len(self.opponent_ids) >= self.config.pool_size:
+            evicted_id = self.opponent_ids.pop(0)
+            self.win_rates.pop(evicted_id, None)
+            evicted_path = self.pool_dir / f"{evicted_id}.pt"
+            if evicted_path.exists():
+                evicted_path.unlink()
+
+        # Save checkpoint.
+        torch.save({"model_state_dict": policy.state_dict()}, self.pool_dir / f"{opponent_id}.pt")
+        self.opponent_ids.append(opponent_id)
+        # Neutral starting win-rate.
+        self.win_rates[opponent_id] = 0.5
+
+    def update_win_rate(self, opponent_id: str, won: bool) -> None:
+        if opponent_id not in self.win_rates:
+            return
+        alpha = self.config.pool_win_rate_smoothing
+        self.win_rates[opponent_id] = (1 - alpha) * self.win_rates[opponent_id] + alpha * float(won)
+
+    def sample(self) -> tuple[PolicyNet, str]:
+        # Returns frozen snapshot of a policy from the pool (can't train it)
+        if not self.opponent_ids:
+            raise RuntimeError("OpponentPool is empty. Call pool.add() before pool.sample().")
+
+        floor = self.config.min_pool_win_rate_weight
+        # Weight = 1 - ema_win_rate, clamped to [floor, 1.0].
+        # Opponents we beat easily get low weight; hard ones get high weight.
+        weights = [max(floor, 1.0 - self.win_rates.get(oid, 0.5)) for oid in self.opponent_ids]
+        (opponent_id,) = random.choices(self.opponent_ids, weights=weights, k=1)
+        return self._load_policy_cached(opponent_id), opponent_id
+
+    def _load_policy_impl(self, opponent_id: str) -> PolicyNet:
+        checkpoint = torch.load(
+            self.pool_dir / f"{opponent_id}.pt",
+            map_location="cpu",
+            weights_only=True,
+        )
+        net = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
+        net.load_state_dict(checkpoint["model_state_dict"])
+        net.eval()
+        return net
+
+    def __len__(self) -> int:
+        return len(self.opponent_ids)
+
+    def __repr__(self) -> str:
+        return f"OpponentPool(size={len(self)}/{self.config.pool_size}, ids={self.opponent_ids})"
