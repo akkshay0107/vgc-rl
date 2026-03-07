@@ -23,6 +23,7 @@ from poke_env.ps_client import (
 from poke_env.teambuilder import Teambuilder
 
 import observation_builder
+from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
 
 
@@ -68,13 +69,8 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
             fake=fake,
             strict=strict,
         )
-        num_switches = 6
-        num_moves = 4
-        num_targets = 5
-        num_gimmicks = 1
-        act_size = 1 + num_switches + num_moves * num_targets * (num_gimmicks + 1)
         self.action_spaces = {
-            agent: MultiDiscrete([act_size, act_size]) for agent in self.possible_agents
+            agent: MultiDiscrete([ACT_SIZE, ACT_SIZE]) for agent in self.possible_agents
         }
 
     @staticmethod

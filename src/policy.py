@@ -4,7 +4,8 @@ import torch.nn.init as init
 from torch.distributions import Categorical
 
 from cls_reducer import CLSReducer
-from constants import ACT_SIZE, OBS_DIM
+from lookups import ACT_SIZE, OBS_DIM
+
 
 # Needs all inputs to be on the same device as the model
 class PolicyNet(nn.Module):
@@ -160,7 +161,9 @@ class PolicyNet(nn.Module):
         return torch.stack(
             [
                 logits[:, 0],  # first row actions unchanged
-                logits[:, 1].masked_fill(~mask2.bool(), float("-inf")),  # masked row for second pokemon
+                logits[:, 1].masked_fill(
+                    ~mask2.bool(), float("-inf")
+                ),  # masked row for second pokemon
             ],
             dim=1,
         )

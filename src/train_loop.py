@@ -9,8 +9,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 import observation_builder
-from constants import ACT_SIZE, OBS_DIM
 from env import SimEnv
+from lookups import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 from ppo_utils import (
     OpponentPool,

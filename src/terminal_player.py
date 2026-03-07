@@ -18,8 +18,8 @@ from poke_env.player import (
 from poke_env.teambuilder import Teambuilder
 
 import observation_builder
-from constants import ACT_SIZE
 from env import Gen9VGCEnv
+from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
 
 _TARGET_NAME = {-2: "default", -1: "self", 0: "ally", 1: "opp1", 2: "opp2"}

@@ -9,14 +9,17 @@ from poke_env.battle.side_condition import SideCondition
 from poke_env.battle.weather import Weather
 from transformers import BertModel, BertTokenizerFast
 
-from constants import ACT_SIZE, EXTRA_SZ, OBS_DIM, TINYBERT_SZ
 from lookups import (
+    ACT_SIZE,
     EFFECT_DESCRIPTION,
+    EXTRA_SZ,
     ITEM_DESCRIPTION,
     MOVES,
+    OBS_DIM,
     POKEMON,
     POKEMON_DESCRIPTION,
     STATUS_DESCRIPTION,
+    TINYBERT_SZ,
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

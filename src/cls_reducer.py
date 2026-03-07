@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 
-from constants import OBS_DIM
+from lookups import OBS_DIM
 
 
 class CLSReducer(nn.Module):

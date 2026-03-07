@@ -7,7 +7,7 @@ from typing import Self
 
 import torch
 
-from constants import ACT_SIZE, OBS_DIM
+from lookups import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 
 
