@@ -133,20 +133,3 @@ def save_checkpoint(path, model, epoch):
         "model_state_dict": model.state_dict(),
     }
     torch.save(checkpoint, path)
-
-
-if __name__ == "__main__":
-    root_dir = Path(__file__).resolve().parent.parent
-    replays_dir = root_dir / "replays"
-    checkpoints_dir = root_dir / "checkpoints"
-    checkpoints_dir.mkdir(exist_ok=True, parents=True)
-
-    if not replays_dir.exists():
-        print(f"Replays directory not found: {replays_dir}")
-        exit(0)
-
-    model = train_behavior_cloning(str(replays_dir))
-    if model:
-        save_path = checkpoints_dir / "behavior_cloning_checkpoint.pt"
-        save_checkpoint(save_path, model, 10)
-        print(f"Checkpoint saved to {save_path}")
