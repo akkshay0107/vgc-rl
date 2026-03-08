@@ -242,8 +242,10 @@ def main():
 
         pool = OpponentPool.load_or_create(config.pool_dir, config)
         if len(pool) == 0:
-            # Seed the pool with the initial (possibly pretrained) policy.
-            print("Opponent pool is empty — adding initial policy as first seed.")
+            print(
+                "Opponent pool is empty. Please run `uv run python src/seed_pool.py` first to create the initial seeds."
+            )
+            print("For now, adding a random policy as 'ep0' so training can proceed.")
             pool.add(policy, "ep0")
             pool.save_state()
 

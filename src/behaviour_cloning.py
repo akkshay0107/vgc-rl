@@ -14,7 +14,7 @@ class ReplayDataset(Dataset):
         path = Path(replays_dir)
 
         # Load and flatten immediately
-        for replay_file in sorted(path.glob("*.replay")):
+        for replay_file in sorted(path.rglob("*.replay")):
             try:
                 episode_data = torch.load(replay_file, weights_only=False)
                 # episode_data is a list of dicts (check terminal_player)
@@ -38,29 +38,29 @@ class ReplayDataset(Dataset):
         }
 
 
-def train_behavior_cloning(replays_path):
-    # Configs
-    BATCH_SIZE = 32
-    NUM_EPOCHS = 10
-    LEARNING_RATE = 3e-4
-
-    # Load dataset
-    dataset = ReplayDataset(replays_path)
-
+def train_behavior_cloning(
+    dataset: Dataset,
+    batch_size: int = 64,
+    num_epochs: int = 10,
+    learning_rate: float = 3e-4,
+    val_split_ratio: float = 0.2,
+) -> PolicyNet | None:
     if len(dataset) == 0:
         print("No data available for training.")
-        return
+        return None
 
-    train_size = int(0.8 * len(dataset))
-    train_dataset = torch.utils.data.Subset(dataset, range(train_size))
-    val_dataset = torch.utils.data.Subset(dataset, range(train_size, len(dataset)))
+    val_size = int(val_split_ratio * len(dataset))
+    train_size = len(dataset) - val_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size]
+    )
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
     policy = PolicyNet()
     device = policy.device
-    optimizer = torch.optim.AdamW(policy.parameters(), lr=LEARNING_RATE, eps=1e-5)
+    optimizer = torch.optim.AdamW(policy.parameters(), lr=learning_rate, eps=1e-5)
 
     for epoch in range(NUM_EPOCHS):
         print(f"Epoch {epoch + 1}/{NUM_EPOCHS}")
