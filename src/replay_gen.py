@@ -1,6 +1,8 @@
+import argparse
 import asyncio
 import random
 import uuid
+from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,7 +84,7 @@ def print_valid_actions_from_mask(battle, action_mask):
 # this way I shouldn't be able to tell which opponent is of which
 # type before the game starts
 def get_opponent(fmt: str, team: Teambuilder) -> Player:
-    name = uuid.uuid4().hex[:7]
+    name = uuid.uuid4().hex[:16]
     num = random.random()
     if num < 0.7:
         return SimpleHeuristicsPlayer(
@@ -110,14 +112,16 @@ def get_opponent(fmt: str, team: Teambuilder) -> Player:
         )
 
 
-class TerminalPlayer(Player):
-    def __init__(self, save_dir, random_input=False, *args, **kwargs):
+class ReplayRecordingPlayer(Player, ABC):
+    def __init__(self, save_dir, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_dir = save_dir
         self.episode_data = []
-        self.random_input = random_input
 
     def _save_episode_data(self):
+        if not self.episode_data:
+            return None
+
         save_dir = Path(self.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -132,10 +136,38 @@ class TerminalPlayer(Player):
         self.episode_data = []
         return str(save_path)
 
+    def get_observation(self, battle: AbstractBattle):
+        assert isinstance(battle, DoubleBattle)
+        return observation_builder.from_battle(battle)
+
+    async def choose_move(self, battle: AbstractBattle):
+        assert isinstance(battle, DoubleBattle)
+        if battle._wait:
+            return DefaultBattleOrder()
+
+        obs = self.get_observation(battle)
+        action_mask = observation_builder.get_action_mask(battle)
+
+        action_np = await self.get_action(battle, action_mask)
+        self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
+        return Gen9VGCEnv.action_to_order(action_np, battle)
+
+    @abstractmethod
+    async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
+        pass
+
+    def teampreview(self, battle: AbstractBattle) -> str:
+        return super().random_teampreview(battle)
+
+
+class TerminalPlayer(ReplayRecordingPlayer):
+    def __init__(self, save_dir, *args, **kwargs):
+        super().__init__(save_dir, *args, **kwargs)
+
     def sequential_mask(self, action_mask, action1):
-        mask2 = action_mask[1]  # using view of action mask
+        mask2 = action_mask[1].clone()
         switch_mask = (1 <= action1) & (action1 <= 6)
-        tera_mask = (26 < action1) & (action1 <= 46)
+        tera_mask = (27 <= action1) & (action1 <= 46)
         pass_mask = action1 == 0
 
         # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
@@ -151,27 +183,12 @@ class TerminalPlayer(Player):
 
         return mask2
 
-    def logits_from_mask(self, action_mask):
-        logits = torch.ones_like(action_mask, dtype=torch.float32)
-        return logits.masked_fill(~action_mask.bool(), float("-inf"))
-
-    def _get_random_move(self, action_mask):
-        logits1 = self.logits_from_mask(action_mask[0])
-        cat1 = torch.distributions.Categorical(logits=logits1)
-        action1 = cat1.sample()
-
-        mask2 = self.sequential_mask(action_mask, action1)
-        logits2 = self.logits_from_mask(mask2)
-        cat2 = torch.distributions.Categorical(logits=logits2)
-        action2 = cat2.sample()
-        return np.asarray([action1.item(), action2.item()], dtype=np.int64)
-
-    async def _get_move_from_terminal(self, battle, action_mask):
+    async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
         action_mask_cpu = action_mask.detach().cpu()
         print_valid_actions_from_mask(battle, action_mask_cpu)
 
         while True:
-            line = await asyncio.to_thread(input, "")
+            line = await asyncio.to_thread(input, "Enter two actions (e.g., '10 15'): ")
             try:
                 action = [int(x) for x in line.split()]
                 if len(action) < 2:
@@ -208,53 +225,41 @@ class TerminalPlayer(Player):
 
             # Both passing
             if action1 == 0 and action2 == 0:
-                print(
-                    "Error: Mutually exclusive actions selected. Both pokemon cannot pass. Re-input your two choices."
-                )
-                continue
+                # check if there are any other valid moves for action2
+                m2 = self.sequential_mask(action_mask_cpu, action1)
+                if not m2[action2]:
+                    print(
+                        "Error: Mutually exclusive actions selected. Both pokemon cannot pass. Re-input your two choices."
+                    )
+                    continue
 
             return np.asarray(action, dtype=np.int64)
 
-    async def choose_move(self, battle: AbstractBattle):
-        assert isinstance(battle, DoubleBattle)
-        if battle._wait:
-            return DefaultBattleOrder()
 
-        obs = self.get_observation(battle)
-        action_mask = observation_builder.get_action_mask(battle)
+class StrategyRecordingPlayer(ReplayRecordingPlayer):
+    def __init__(self, strategy_player: Player, save_dir, *args, **kwargs):
+        # We don't need to pass all args to strategy_player if it's already initialized
+        # but we need them for the wrapper player itself.
+        super().__init__(save_dir, *args, **kwargs)
+        self.strategy_player = strategy_player
 
-        record_move = False
-        k_random_moves = 0
-        if self.random_input:
-            action_np = self._get_random_move(action_mask)
-            record_move = True
-        else:  # Human player logic
-            if battle.turn == 1:
-                k_random_moves = random.randint(0, 4)
-                if k_random_moves > 0:
-                    print(f"Starting with {k_random_moves} random moves.")
-
-            if battle.turn > k_random_moves:
-                action_np = await self._get_move_from_terminal(battle, action_mask)
-                record_move = True
-            else:
-                print(f"Playing randomly for turn {battle.turn}/{k_random_moves}")
-                action_np = self._get_random_move(action_mask)
-
-        if record_move:
-            self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
-
-        return Gen9VGCEnv.action_to_order(action_np, battle)
-
-    def get_observation(self, battle: AbstractBattle):
-        assert isinstance(battle, DoubleBattle)
-        return observation_builder.from_battle(battle)
-
-    def teampreview(self, battle: AbstractBattle) -> str:
-        return super().random_teampreview(battle)
+    async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
+        order = self.strategy_player.choose_move(battle)
+        return Gen9VGCEnv.order_to_action(order, battle)  # type: ignore
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="Replay Generator")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--mbp", action="store_true", help="Run with Max Base Power strategy")
+    group.add_argument("--sh", action="store_true", help="Run with Simple Heuristic strategy")
+    group.add_argument(
+        "--interactive", action="store_true", help="Run interactively as Terminal Player"
+    )
+    parser.add_argument("-n", type=int, default=100, help="Number of battles to play")
+
+    args = parser.parse_args()
+
     teams_dir = "./teams"
     team_files = [
         path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
@@ -262,47 +267,75 @@ async def main():
     team = RandomTeamFromPool(team_files)
     fmt = "gen9vgc2025regh"
 
-    save_dir = "./replays"
-    term_player = TerminalPlayer(
-        save_dir=save_dir,
-        random_input=False,
-        account_configuration=AccountConfiguration("TermPlayer", None),
-        battle_format=fmt,
-        server_configuration=LocalhostServerConfiguration,
-        team=team,
-        accept_open_team_sheet=True,
-        max_concurrent_battles=1,
-    )
-
-    # As of right now data is collected entirely as human battles vs bots
-    # Potentially add cases where bots play each other and human takes over midway
-    # (for diverse initial states, instead of always being on winning positions) ??
-    # Have to remove the bot on bot moves from epsiode data for that
-    if not term_player.random_input:
-        choice = "y"
-        while choice == "y":
-            selected_opp = get_opponent(fmt, team)
-            await term_player.battle_against(selected_opp, n_battles=1)
-            # Cleanup newly created opponent
-            await selected_opp.ps_client.stop_listening()
-
-            choice = input("Play again? (y/n)")[0]
-            choice = choice.lower()
-
-        # Cleanup and save session
-        term_player._save_episode_data()
-        await term_player.ps_client.stop_listening()
+    if args.interactive:
+        save_dir = "./replays/interactive"
+        player = TerminalPlayer(
+            save_dir=save_dir,
+            account_configuration=AccountConfiguration("TermPlayer", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            max_concurrent_battles=1,
+        )
+    elif args.mbp:
+        save_dir = "./replays/max_base_power"
+        strategy = MaxBasePowerPlayer(
+            account_configuration=AccountConfiguration("MBP_Strategy", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            start_listening=False,
+        )
+        player = StrategyRecordingPlayer(
+            strategy_player=strategy,
+            save_dir=save_dir,
+            account_configuration=AccountConfiguration("BotPlayer", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            max_concurrent_battles=1,
+        )
+    elif args.sh:
+        save_dir = "./replays/simple_heuristic"
+        strategy = SimpleHeuristicsPlayer(
+            account_configuration=AccountConfiguration("SH_Strategy", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            start_listening=False,
+        )
+        player = StrategyRecordingPlayer(
+            strategy_player=strategy,
+            save_dir=save_dir,
+            account_configuration=AccountConfiguration("BotPlayer", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            max_concurrent_battles=1,
+        )
     else:
-        N_BATTLES = 100
-        for _ in range(N_BATTLES):
-            selected_opp = get_opponent(fmt, team)
-            await term_player.battle_against(selected_opp, n_battles=1)
+        return
 
-            # Cleanup newly created opponent
-            await selected_opp.ps_client.stop_listening()
+    n_battles = args.n
+    for i in range(1, n_battles + 1):
+        print(f"Battle {i}/{n_battles}")
+        selected_opp = get_opponent(fmt, team)
+        await player.battle_against(selected_opp, n_battles=1)
+        await selected_opp.ps_client.stop_listening()
 
-        term_player._save_episode_data()
-        await term_player.ps_client.stop_listening()
+        if args.interactive:
+            player._save_episode_data()
+        elif i % 100 == 0:
+            player._save_episode_data()
+
+    # Cleanup and save session (handles any remaining battles for mbp/sh)
+    player._save_episode_data()
+    await player.ps_client.stop_listening()
 
 
 if __name__ == "__main__":
