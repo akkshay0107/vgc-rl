@@ -32,7 +32,7 @@ if policy.device.type == "cuda":
     policy.compile()
 
 
-def collect_rollout(env, buffer, opponent_policy: PolicyNet, opponent_id: str) -> bool:
+def collect_rollout(env, buffer, opponent_policy: PolicyNet) -> bool:
     """Run one full battle episode.
 
     Returns True if the training agent (agent1) won, False otherwise.
@@ -100,10 +100,9 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet, opponent_id: str) -
 
 
 def collect_all_rollouts(envs, buffer, executor, pool: OpponentPool):
-    """Collect config.rollouts_per_episode rollouts in parallel.
-
-    Each rollout samples a (potentially different) opponent from the pool,
-    giving maximum diversity within a single episode.
+    """
+    Collect config.rollouts_per_episode rollouts in parallel.
+    Each rollout samples a (potentially different) opponent from the pool.
     """
     env_queue = queue.Queue()
     for env in envs:
@@ -115,7 +114,7 @@ def collect_all_rollouts(envs, buffer, executor, pool: OpponentPool):
     def worker(opponent_policy: PolicyNet, opponent_id: str):
         env = env_queue.get()
         try:
-            won = collect_rollout(env, buffer, opponent_policy, opponent_id)
+            won = collect_rollout(env, buffer, opponent_policy)
             return opponent_id, won
         finally:
             env_queue.put(env)

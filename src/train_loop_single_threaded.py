@@ -28,9 +28,9 @@ if policy.device.type == "cuda":
     policy.compile()
 
 
-def collect_rollout(env, buffer, opponent_policy: PolicyNet, opponent_id: str) -> bool:
-    """Run one full battle episode.
-
+def collect_rollout(env, buffer, opponent_policy: PolicyNet) -> bool:
+    """
+    Run one full battle episode.
     Returns True if the training agent (agent1) won, False otherwise.
     """
     obs, _ = env.reset()
@@ -222,7 +222,7 @@ def main():
         # Sequential collection; sample a (possibly different) opponent per rollout.
         for _ in range(config.rollouts_per_episode):
             opponent_policy, opponent_id = pool.sample()
-            won = collect_rollout(env, buffer, opponent_policy, opponent_id)
+            won = collect_rollout(env, buffer, opponent_policy)
             pool.update_win_rate(opponent_id, won)
 
         rollout_time = time.time() - t0_rollout

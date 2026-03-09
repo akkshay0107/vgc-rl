@@ -28,18 +28,11 @@ class ReplayDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        sample = self.samples[idx]
-
-        return {
-            "obs": sample["obs"],
-            "mask": sample["mask"].to(torch.bool),
-            # converting numpy array action to a tensor
-            "action": torch.tensor(sample["action"], dtype=torch.long),
-        }
+        return self.samples[idx]
 
 
 def train_behavior_cloning(
-    dataset: Dataset,
+    dataset,
     batch_size: int = 64,
     num_epochs: int = 10,
     learning_rate: float = 3e-4,
@@ -51,9 +44,7 @@ def train_behavior_cloning(
 
     val_size = int(val_split_ratio * len(dataset))
     train_size = len(dataset) - val_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size]
-    )
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -62,8 +53,8 @@ def train_behavior_cloning(
     device = policy.device
     optimizer = torch.optim.AdamW(policy.parameters(), lr=learning_rate, eps=1e-5)
 
-    for epoch in range(NUM_EPOCHS):
-        print(f"Epoch {epoch + 1}/{NUM_EPOCHS}")
+    for epoch in range(num_epochs):
+        print(f"Epoch {epoch + 1}/{num_epochs}")
         policy.train()
         train_loss = 0.0
         train_correct = 0

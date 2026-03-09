@@ -173,12 +173,24 @@ class OpponentPool:
 
     def _load_state(self) -> None:
         path = self.pool_dir / "pool_state.json"
-        if not path.exists():
-            return
-        with open(path) as f:
-            state = json.load(f)
-        self.opponent_ids = state.get("opponent_ids", [])
-        self.win_rates = state.get("win_rates", {})
+        if path.exists():
+            with open(path) as f:
+                state = json.load(f)
+            self.opponent_ids = state.get("opponent_ids", [])
+            self.win_rates = state.get("win_rates", {})
+
+        # Sync with filesystem for any missing .pt files (e.g. if json was lost)
+        for pt_file in sorted(self.pool_dir.glob("*.pt")):
+            opponent_id = pt_file.stem
+            if opponent_id not in self.opponent_ids:
+                self.opponent_ids.append(opponent_id)
+                if opponent_id not in self.win_rates:
+                    self.win_rates[opponent_id] = 0.5
+
+        # Cleanup: remove any IDs that no longer have a corresponding .pt file
+        existing_ids = {pt.stem for pt in self.pool_dir.glob("*.pt")}
+        self.opponent_ids = [oid for oid in self.opponent_ids if oid in existing_ids]
+        self.win_rates = {oid: wr for oid, wr in self.win_rates.items() if oid in existing_ids}
 
     @classmethod
     def load_or_create(cls, pool_dir: Path, config: PPOConfig) -> Self:

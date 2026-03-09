@@ -387,7 +387,7 @@ def get_action_mask(battle: AbstractBattle):
         active_mon = battle.active_pokemon[pos]
         if battle._wait or (any(battle.force_switch) and not battle.force_switch[pos]):
             actions = [0]
-        elif all(battle.force_switch) and len(battle.available_switches[0]) == 1:
+        elif all(battle.force_switch) and len(battle.available_switches[pos]) == 1:
             actions = switch_space + [0]
         elif battle.teampreview or active_mon is None:
             actions = switch_space

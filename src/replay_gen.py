@@ -79,12 +79,28 @@ def print_valid_actions_from_mask(battle, action_mask):
             print(f"{a}: MOVE -> {mv.id} | target={_TARGET_NAME[target]} | tera={tera}")
 
 
+def _modify_mask(action_mask: torch.Tensor, action1):
+    mask2 = action_mask[1].clone().bool()
+    if 1 <= action1 and action1 <= 6:
+        mask2[action1] = 0
+    elif (26 < action1) and (action1 <= 46):
+        mask2[27:47] = 0
+    elif action1 == 0:
+        mask2[0] = 0
+
+    no_valid = mask2.sum(-1) == 0
+    if no_valid:
+        mask2[0] = 1
+
+    return mask2
+
+
 # this function only exists to give each player a seperate name
 # which is random before the battle with the bot (although unnecessarily expensive)
 # this way I shouldn't be able to tell which opponent is of which
 # type before the game starts
 def get_opponent(fmt: str, team: Teambuilder) -> Player:
-    name = uuid.uuid4().hex[:16]
+    name = "p" + uuid.uuid4().hex[:16]  # prevent off chance of no letters
     num = random.random()
     if num < 0.7:
         return SimpleHeuristicsPlayer(
@@ -164,25 +180,6 @@ class TerminalPlayer(ReplayRecordingPlayer):
     def __init__(self, save_dir, *args, **kwargs):
         super().__init__(save_dir, *args, **kwargs)
 
-    def sequential_mask(self, action_mask, action1):
-        mask2 = action_mask[1].clone()
-        switch_mask = (1 <= action1) & (action1 <= 6)
-        tera_mask = (27 <= action1) & (action1 <= 46)
-        pass_mask = action1 == 0
-
-        # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
-        mask2[switch_mask, action1[switch_mask]] = 0
-        # If Pokemon 1 uses terastallize in certain moves, Pokemon 2 cannot also tera in that range
-        mask2[tera_mask, 27:47] = 0
-        # If Pokemon 1 passes, Pokemon 2 cannot pass as well unless no valid moves left
-        mask2[pass_mask, 0] = 0
-
-        # If no valid action remains, force pass action to be valid for Pokemon 2
-        no_valid = mask2.sum(-1) == 0
-        mask2[no_valid, 0] = 1
-
-        return mask2
-
     async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
         action_mask_cpu = action_mask.detach().cpu()
         print_valid_actions_from_mask(battle, action_mask_cpu)
@@ -226,7 +223,7 @@ class TerminalPlayer(ReplayRecordingPlayer):
             # Both passing
             if action1 == 0 and action2 == 0:
                 # check if there are any other valid moves for action2
-                m2 = self.sequential_mask(action_mask_cpu, action1)
+                m2 = _modify_mask(action_mask_cpu, action1)
                 if not m2[action2]:
                     print(
                         "Error: Mutually exclusive actions selected. Both pokemon cannot pass. Re-input your two choices."
@@ -245,7 +242,23 @@ class StrategyRecordingPlayer(ReplayRecordingPlayer):
 
     async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
         order = self.strategy_player.choose_move(battle)
-        return Gen9VGCEnv.order_to_action(order, battle)  # type: ignore
+        action = Gen9VGCEnv.order_to_action(order, battle, fake=True, strict=False)  # type: ignore
+
+        if action[0] < 0:
+            action[0] = 0
+        if not action_mask[0, action[0]]:
+            valid_indices = torch.where(action_mask[0])[0]
+            action[0] = valid_indices[0].item()
+
+        mask2 = _modify_mask(action_mask, action[0])
+
+        if action[1] < 0:
+            action[1] = 0
+        if not mask2[action[1]]:
+            valid_indices = torch.where(mask2)[0]
+            action[1] = valid_indices[0].item()
+
+        return action
 
 
 async def main():

@@ -8,7 +8,7 @@ from poke_env.player import MaxBasePowerPlayer, RandomPlayer, SimpleHeuristicsPl
 # Add src to python path
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent / "src"))
 
-from behaviour_cloning import train_behavior_cloning
+from behaviour_cloning import ReplayDataset, train_behavior_cloning
 from policy import PolicyNet
 from rl_player import RLPlayer
 from teampreview import TeamPreviewHandler
@@ -66,7 +66,12 @@ async def main():
         return
 
     print("--- Starting Behavior Cloning Training ---")
-    bc_policy = train_behavior_cloning(str(replays_dir))
+    dataset = ReplayDataset(str(replays_dir))
+    if len(dataset) == 0:
+        print("Error: No replays found in dataset. Please run replay_gen.py first.")
+        return
+
+    bc_policy = train_behavior_cloning(dataset)
 
     if not bc_policy:
         print("Error: Behavior cloning training failed to return a model.")
