@@ -19,6 +19,7 @@ dependencies = [
     "idna",
     "certifi",
     "pettingzoo",
+    "scikit-learn>=1.0.0",
     "transformers[torch]>=4.57.1",
     "peft>=0.18.1",
 ]
