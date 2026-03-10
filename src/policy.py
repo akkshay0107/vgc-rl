@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-from encoder import ACT_SIZE, OBS_DIM
 from torch.distributions import Categorical
 
 from cls_reducer import CLSReducer
+from lookups import ACT_SIZE, OBS_DIM
 
 
 # Needs all inputs to be on the same device as the model
@@ -142,7 +142,7 @@ class PolicyNet(nn.Module):
     def _apply_sequential_masks(
         self, logits: torch.Tensor, action1: torch.Tensor, action_mask: torch.Tensor
     ):
-        mask2 = action_mask[:, 1]  # using view of action mask
+        mask2 = action_mask[:, 1].bool()  # using view of action mask
         switch_mask = (1 <= action1) & (action1 <= 6)
         tera_mask = (26 < action1) & (action1 <= 46)
         pass_mask = action1 == 0
@@ -161,7 +161,9 @@ class PolicyNet(nn.Module):
         return torch.stack(
             [
                 logits[:, 0],  # first row actions unchanged
-                logits[:, 1].masked_fill(~mask2, float("-inf")),  # masked row for second pokemon
+                logits[:, 1].masked_fill(
+                    ~mask2.bool(), float("-inf")
+                ),  # masked row for second pokemon
             ],
             dim=1,
         )

@@ -19,6 +19,8 @@ wheels/
 
 # Checkpoints
 checkpoints/*
+ppo_best_checkpoint.pt
 
 # Replays
 replays/*
+test_replays/*

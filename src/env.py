@@ -23,6 +23,7 @@ from poke_env.ps_client import (
 from poke_env.teambuilder import Teambuilder
 
 import observation_builder
+from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
 
 
@@ -39,7 +40,7 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         save_replays: Union[bool, str] = False,
         server_configuration: Optional[ServerConfiguration] = LocalhostServerConfiguration,
         accept_open_team_sheet: Optional[bool] = True,
-        start_timer_on_battle_start: bool = True,
+        start_timer_on_battle_start: bool = False,
         start_listening: bool = True,
         open_timeout: Optional[float] = 10.0,
         ping_interval: Optional[float] = 20.0,
@@ -68,13 +69,8 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
             fake=fake,
             strict=strict,
         )
-        num_switches = 6
-        num_moves = 4
-        num_targets = 5
-        num_gimmicks = 1
-        act_size = 1 + num_switches + num_moves * num_targets * (num_gimmicks + 1)
         self.action_spaces = {
-            agent: MultiDiscrete([act_size, act_size]) for agent in self.possible_agents
+            agent: MultiDiscrete([ACT_SIZE, ACT_SIZE]) for agent in self.possible_agents
         }
 
     @staticmethod
@@ -325,13 +321,15 @@ class SimEnv(Gen9VGCEnv):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def build_env(cls):
+    def build_env(cls, env_id: int = 0):
         teams_dir = "./teams"
         team_files = [
             path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
         ]
         team = RandomTeamFromPool(team_files)
         return cls(
+            account_configuration1=AccountConfiguration(f"TrainAgent_{env_id}", None),
+            account_configuration2=AccountConfiguration(f"BestAgent_{env_id}", None),
             battle_format="gen9vgc2025regh",
             accept_open_team_sheet=True,
             start_timer_on_battle_start=True,

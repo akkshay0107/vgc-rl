@@ -1,7 +1,4 @@
-import queue
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import torch
@@ -22,7 +19,6 @@ from ppo_utils import (
 )
 
 config = PPOConfig()
-_buffer_lock = threading.Lock()
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
 optimizer = optim.AdamW(policy.parameters(), lr=config.lr, eps=1e-5)
@@ -33,12 +29,11 @@ if policy.device.type == "cuda":
 
 
 def collect_rollout(env, buffer, opponent_policy: PolicyNet) -> bool:
-    """Run one full battle episode.
-
+    """
+    Run one full battle episode.
     Returns True if the training agent (agent1) won, False otherwise.
     """
     obs, _ = env.reset()
-    local_transitions = []
     agent1_won = False
 
     while True:
@@ -74,7 +69,7 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet) -> bool:
         done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
 
         reward1 = rewards[env.agent1.username]
-        local_transitions.append(
+        buffer.add(
             {
                 "obs": obs_batch.cpu(),
                 "actions": action1.cpu(),
@@ -92,39 +87,7 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet) -> bool:
 
         obs = next_obs
 
-    with _buffer_lock:
-        for t in local_transitions:
-            buffer.add(t)
-
     return agent1_won
-
-
-def collect_all_rollouts(envs, buffer, executor, pool: OpponentPool):
-    """
-    Collect config.rollouts_per_episode rollouts in parallel.
-    Each rollout samples a (potentially different) opponent from the pool.
-    """
-    env_queue = queue.Queue()
-    for env in envs:
-        env_queue.put(env)
-
-    # Pre-sample one opponent per rollout slot.
-    sampled_opponents = [pool.sample() for _ in range(config.rollouts_per_episode)]
-
-    def worker(opponent_policy: PolicyNet, opponent_id: str):
-        env = env_queue.get()
-        try:
-            won = collect_rollout(env, buffer, opponent_policy)
-            return opponent_id, won
-        finally:
-            env_queue.put(env)
-
-    futures = [
-        executor.submit(worker, opp_policy, opp_id) for opp_policy, opp_id in sampled_opponents
-    ]
-    for f in as_completed(futures):
-        opp_id, won = f.result()
-        pool.update_win_rate(opp_id, won)
 
 
 def ppo_update(rollout_data):
@@ -231,76 +194,76 @@ def ppo_update(rollout_data):
 
 
 def main():
-    envs = [SimEnv.build_env(env_id=i) for i in range(config.n_jobs)]
+    env = SimEnv.build_env(env_id=0)
     buffer = RolloutBuffer()
-    executor = ThreadPoolExecutor(max_workers=config.n_jobs)
 
-    # to guarantee executor shutdown
-    try:
-        start = load_checkpoint(config.checkpoint_path, policy, optimizer, scheduler) or 0
+    start = load_checkpoint(config.checkpoint_path, policy, optimizer, scheduler) or 0
 
-        pool = OpponentPool.load_or_create(config.pool_dir, config)
-        if len(pool) == 0:
-            print(
-                "Opponent pool is empty. Please run `uv run python src/seed_pool.py` first to create the initial seeds."
-            )
-            print("For now, adding a random policy as 'ep0' so training can proceed.")
-            pool.add(policy, "ep0")
+    pool = OpponentPool.load_or_create(config.pool_dir, config)
+    if len(pool) == 0:
+        print(
+            "Opponent pool is empty. Please run `uv run python src/seed_pool.py` first to create the initial seeds."
+        )
+        print("For now, adding a random policy as 'ep0' so training can proceed.")
+        pool.add(policy, "ep0")
+        pool.save_state()
+
+    print(f"Starting training from episode {start + 1}")
+    print(f"Opponent pool: {pool}")
+
+    for episode in range(start, config.num_episodes):
+        print(f"Collecting rollout for episode {episode + 1}")
+
+        t0_rollout = time.time()
+        buffer.reset()
+
+        policy.eval()
+
+        # Sequential collection; sample a (possibly different) opponent per rollout.
+        for _ in range(config.rollouts_per_episode):
+            opponent_policy, opponent_id = pool.sample()
+            won = collect_rollout(env, buffer, opponent_policy)
+            pool.update_win_rate(opponent_id, won)
+
+        rollout_time = time.time() - t0_rollout
+        processed_rollout_data = buffer.get_batches(policy.device, config)
+        winrate_stats = get_winrate(buffer)
+
+        # Snapshot the current policy into the pool periodically.
+        if (episode + 1) % config.snapshot_interval == 0:
+            snap_id = f"ep{episode + 1}"
+            pool.add(policy, snap_id)
             pool.save_state()
+            print(f"Snapshot '{snap_id}' added to opponent pool. Pool: {pool}")
 
-        print(f"Starting training from episode {start + 1}")
-        print(f"Opponent pool: {pool}")
+        stats = ppo_update(processed_rollout_data)
+        scheduler.step()
+        del processed_rollout_data
 
-        for episode in range(start, config.num_episodes):
-            print(f"Collecting rollout for episode {episode + 1}")
+        # Log per-opponent win-rates every 10 episodes.
+        if (episode + 1) % 10 == 0:
+            print("  Opponent win-rates (training policy vs pool):")
+            for oid, wr in pool.win_rates.items():
+                print(f"    {oid}: {wr:.2%}")
 
-            t0_rollout = time.time()
-            buffer.reset()
+        print("=" * 60)
+        print(f"Episode {episode + 1}/{config.num_episodes}:")
+        print(
+            f"  Win Rate: {winrate_stats['win_rate']:.2%} (W/L: {winrate_stats['wins']}/{winrate_stats['losses']})"
+        )
+        print(f"  Rollout Time: {rollout_time:.4f} s")
+        print(f"  Policy Loss: {stats['policy_loss']:.4f}")
+        print(f"  Value Loss: {stats['value_loss']:.4f}")
+        print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
+        print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
+        print(f"  Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
+        print(f"  Update Time: {stats['time']:.4f} s")
+        print("=" * 60)
 
-            policy.eval()
-            collect_all_rollouts(envs, buffer, executor, pool)
-
-            rollout_time = time.time() - t0_rollout
-            processed_rollout_data = buffer.get_batches(policy.device, config)
-            winrate_stats = get_winrate(buffer)
-
-            # Snapshot the current policy into the pool periodically.
-            if (episode + 1) % config.snapshot_interval == 0:
-                snap_id = f"ep{episode + 1}"
-                pool.add(policy, snap_id)
-                pool.save_state()
-                print(f"Snapshot '{snap_id}' added to opponent pool. Pool: {pool}")
-
-            stats = ppo_update(processed_rollout_data)
-            scheduler.step()
-            del processed_rollout_data
-
-            # Log per-opponent win-rates every 10 episodes.
-            if (episode + 1) % 10 == 0:
-                print("  Opponent win-rates (training policy vs pool):")
-                for oid, wr in pool.win_rates.items():
-                    print(f"    {oid}: {wr:.2%}")
-
-            print("=" * 60)
-            print(f"Episode {episode + 1}/{config.num_episodes}:")
-            print(
-                f"  Win Rate: {winrate_stats['win_rate']:.2%} (W/L: {winrate_stats['wins']}/{winrate_stats['losses']})"
-            )
-            print(f"  Rollout Time: {rollout_time:.4f} s")
-            print(f"  Policy Loss: {stats['policy_loss']:.4f}")
-            print(f"  Value Loss: {stats['value_loss']:.4f}")
-            print(f"  Entropy Loss: {stats['entropy_loss']:.4f}")
-            print(f"  KL Divergence: {stats['kl_divergence']:.4f}")
-            print(f"  Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
-            print(f"  Update Time: {stats['time']:.4f} s")
-            print("=" * 60)
-
-            if (episode + 1) % 10 == 0:
-                print(f"Saving checkpoint at episode {episode + 1}")
-                save_checkpoint(config.checkpoint_path, episode + 1, policy, optimizer, scheduler)
-                print("Checkpoint saved.")
-    finally:
-        executor.shutdown(wait=True)
+        if (episode + 1) % 10 == 0:
+            print(f"Saving checkpoint at episode {episode + 1}")
+            save_checkpoint(config.checkpoint_path, episode + 1, policy, optimizer, scheduler)
+            print("Checkpoint saved.")
 
 
 if __name__ == "__main__":

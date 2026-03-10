@@ -1,4 +1,4 @@
-import json
+from functools import lru_cache
 
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
@@ -10,27 +10,22 @@ from poke_env.battle.weather import Weather
 from transformers import BertModel, BertTokenizerFast
 
 from lookups import (
+    ACT_SIZE,
     EFFECT_DESCRIPTION,
+    EXTRA_SZ,
     ITEM_DESCRIPTION,
     MOVES,
+    OBS_DIM,
     POKEMON,
     POKEMON_DESCRIPTION,
     STATUS_DESCRIPTION,
+    TINYBERT_SZ,
 )
 
-TINYBERT_SZ = 624
-EXTRA_SZ = 28
-OBS_DIM = (38, TINYBERT_SZ)  # 1 field row + 1 info row + 3 tokens * 12 pokemon
-
-# Define action space parameters (from gen9vgcenv.py)
-NUM_SWITCHES = 6
-NUM_MOVES = 4
-NUM_TARGETS = 5
-NUM_GIMMICKS = 1
-ACT_SIZE = 1 + NUM_SWITCHES + NUM_MOVES * NUM_TARGETS * (NUM_GIMMICKS + 1)
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = BertTokenizerFast.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
-model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
+model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(device)  # type: ignore
+model.eval()
 
 
 def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
@@ -56,14 +51,11 @@ def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
 
     pokemon_desc = POKEMON_DESCRIPTION[id]
 
-    def get_move_desc(move: str, desc) -> str:
-        return move + ":" + json.dumps(desc, separators=(",", ":"))
-
-    moves_desc = " ".join([get_move_desc(move, MOVES[move]) for move in movelist])
+    moves_desc = " ".join([move + ":" + MOVES[move] for move in movelist])
 
     item_desc = (
         "Holds no item."
-        if (pokemon.item is None or pokemon.item == "")
+        if (pokemon.item is None or pokemon.item == "" or pokemon.item not in ITEM_DESCRIPTION)
         else ITEM_DESCRIPTION[pokemon.item]
     )
 
@@ -321,6 +313,30 @@ def _get_info_text(p1_tera: Pokemon | None, p2_tera: Pokemon | None) -> str:
     return p1_str + p2_str
 
 
+@lru_cache(maxsize=200_000)
+def _encode_one(text: str):
+    enc = tokenizer(
+        text,
+        max_length=512,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt",
+    )
+    enc = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
+    # cls mean concat
+    with torch.inference_mode():
+        out = model(**enc).last_hidden_state[0]
+        cls = out[0]
+        mask = enc["attention_mask"][0].unsqueeze(-1)
+        mean = (out * mask).sum(0) / mask.sum(0).clamp(min=1)
+        emb = torch.cat([cls, mean], dim=-1)
+    return emb.float().cpu()
+
+
+def encode_texts(texts: list[str]):
+    return torch.stack([_encode_one(t) for t in texts], dim=0)
+
+
 def from_battle(battle: AbstractBattle):
     assert isinstance(battle, DoubleBattle)
     if battle.teampreview:
@@ -343,34 +359,9 @@ def from_battle(battle: AbstractBattle):
 
     info_txt = _get_info_text(p1_tera, opp_tera)
 
-    # combine the stuff above into one observation
-    # row 0: pad p1 and opp locals into a string
-    # row 1: extra information (for now tera usage)
-    # row 2-25: 2 rows per pokemon in players team and opponents team (text)
-    # row 26-37: 1 rows per pokemon in players team and opponents team (numeric)
     p1_flat = [text for pair in p1_txt for text in pair]
     opp_flat = [text for pair in opp_txt for text in pair]
-    text_inputs = [field_txt, info_txt, *p1_flat, *opp_flat]
-
-    # cls mean concat
-    encoded = tokenizer(
-        text_inputs,
-        max_length=512,
-        padding="max_length",
-        truncation=True,
-        return_tensors="pt",
-    )
-    with torch.no_grad():
-        outputs = model(**encoded)
-    last_hidden = outputs.last_hidden_state  # (26, seq_len, 312)
-    cls_emb = last_hidden[:, 0, :]  # (26, 312)
-    # Exclude padding tokens for mean pooling
-    mask = encoded["attention_mask"].unsqueeze(-1)  # (26, seq_len, 1)
-    masked_hidden = last_hidden * mask
-    sum_hidden = masked_hidden.sum(dim=1)
-    len_nonpad = mask.sum(dim=1).clamp(min=1)  # avoid div by zero
-    mean_emb = sum_hidden / len_nonpad  # (26, 312)
-    text_emb = torch.cat([cls_emb, mean_emb], dim=-1)  # (26, 624)
+    text_emb = encode_texts([field_txt, info_txt, *p1_flat, *opp_flat])
 
     num_emb = torch.tensor(p1_arr + opp_arr)
     num_emb = torch.cat([num_emb, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)
@@ -396,7 +387,7 @@ def get_action_mask(battle: AbstractBattle):
         active_mon = battle.active_pokemon[pos]
         if battle._wait or (any(battle.force_switch) and not battle.force_switch[pos]):
             actions = [0]
-        elif all(battle.force_switch) and len(battle.available_switches[0]) == 1:
+        elif all(battle.force_switch) and len(battle.available_switches[pos]) == 1:
             actions = switch_space + [0]
         elif battle.teampreview or active_mon is None:
             actions = switch_space
