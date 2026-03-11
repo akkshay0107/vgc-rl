@@ -1,12 +1,16 @@
 import queue
 import threading
 import time
+import signal
+import sys
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
 
 import observation_builder
 from env import SimEnv
@@ -23,6 +27,26 @@ from ppo_utils import (
 
 config = PPOConfig()
 _buffer_lock = threading.Lock()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("training_continuous.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+shutdown_requested = False
+
+def handle_sigterm(signum, frame):
+    '''Signal handler for graceful shutdown on SIGTERM from SLURM.'''
+    global shutdown_requested
+    logging.warning("SIGTERM received, requesting shutdown...")
+    shutdown_requested = True
+
+signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGINT, handle_sigterm)  # Also handle Ctrl+C for local runs
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
 optimizer = optim.AdamW(policy.parameters(), lr=config.lr, eps=1e-5)
@@ -214,7 +238,7 @@ def ppo_update(rollout_data):
         tot_avg_kl_div += avg_kl_div
 
         if avg_kl_div > config.target_kl:
-            print(
+            logging.info(
                 f"Early stop at epoch {epoch_idx + 1}/{config.ppo_epochs} (KL={avg_kl_div:.4f} > {config.target_kl})"
             )
             break
@@ -235,24 +259,34 @@ def main():
     buffer = RolloutBuffer()
     executor = ThreadPoolExecutor(max_workers=config.n_jobs)
 
+    config.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    config.pool_dir.mkdir(parents=True, exist_ok=True)
+
+    tb_writer = SummaryWriter(log_dir="runs/ppo_training_1")
+
     # to guarantee executor shutdown
     try:
         start = load_checkpoint(config.checkpoint_path, policy, optimizer, scheduler) or 0
 
         pool = OpponentPool.load_or_create(config.pool_dir, config)
         if len(pool) == 0:
-            print(
+            logging.info(
                 "Opponent pool is empty. Please run `uv run python src/seed_pool.py` first to create the initial seeds."
             )
-            print("For now, adding a random policy as 'ep0' so training can proceed.")
+            logging.info("For now, adding a random policy as 'ep0' so training can proceed.")
             pool.add(policy, "ep0")
             pool.save_state()
 
-        print(f"Starting training from episode {start + 1}")
-        print(f"Opponent pool: {pool}")
+        logging.info(f"Starting training from episode {start + 1}")
+        logging.info(f"Opponent pool: {pool}")
 
         for episode in range(start, config.num_episodes):
-            print(f"Collecting rollout for episode {episode + 1}")
+            if shutdown_requested:
+                logging.warning("Shutdown requested, stopping training loop...")
+                save_checkpoint(config.checkpoint_path, episode, policy, optimizer, scheduler)
+                break
+
+            logging.info(f"Collecting rollout for episode {episode + 1}")
 
             t0_rollout = time.time()
             buffer.reset()
@@ -269,12 +303,26 @@ def main():
                 snap_id = f"ep{episode + 1}"
                 pool.add(policy, snap_id)
                 pool.save_state()
-                print(f"Snapshot '{snap_id}' added to opponent pool. Pool: {pool}")
+                logging.info(f"Snapshot '{snap_id}' added to opponent pool. Pool: {pool}")
 
             stats = ppo_update(processed_rollout_data)
             scheduler.step()
             del processed_rollout_data
 
+            current_lr = scheduler.get_last_lr()[0]
+            tb_writer.add_scalar("WinRate/Train", winrate_stats['win_rate'], episode + 1)
+            tb_writer.add_scalar("Loss/Policy", stats['policy_loss'], episode + 1)
+            tb_writer.add_scalar("Loss/Value", stats['value_loss'], episode + 1)
+            tb_writer.add_scalar("Loss/Entropy", stats['entropy_loss'], episode + 1)
+            tb_writer.add_scalar("Training/KL_Divergence", stats['kl_divergence'], episode + 1)
+            tb_writer.add_scalar("Training/LearningRate", current_lr, episode + 1)
+
+            logging.info(f"Episode {episode + 1}/{config.num_episodes} | "
+                         f"Win Rate: {winrate_stats['win_rate']:.2%} | "
+                         f"Policy Loss: {stats['policy_loss']:.4f} | "
+                         f"KL: {stats['kl_divergence']:.4f}")
+
+            '''
             # Log per-opponent win-rates every 10 episodes.
             if (episode + 1) % 10 == 0:
                 print("  Opponent win-rates (training policy vs pool):")
@@ -294,13 +342,16 @@ def main():
             print(f"  Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
             print(f"  Update Time: {stats['time']:.4f} s")
             print("=" * 60)
+            '''
 
             if (episode + 1) % 10 == 0:
-                print(f"Saving checkpoint at episode {episode + 1}")
+                logging.info(f"Saving checkpoint at episode {episode + 1}")
                 save_checkpoint(config.checkpoint_path, episode + 1, policy, optimizer, scheduler)
-                print("Checkpoint saved.")
+                logging.info("Checkpoint saved.")
     finally:
         executor.shutdown(wait=True)
+        tb_writer.close()
+        logging.info("Training loop terminated successfully.")
 
 
 if __name__ == "__main__":
