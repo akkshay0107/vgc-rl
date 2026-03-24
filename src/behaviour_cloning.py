@@ -37,6 +37,7 @@ def train_behavior_cloning(
     num_epochs: int = 10,
     learning_rate: float = 3e-4,
     val_split_ratio: float = 0.2,
+    policy: PolicyNet | None = None,
 ) -> PolicyNet | None:
     if len(dataset) == 0:
         print("No data available for training.")
@@ -49,7 +50,9 @@ def train_behavior_cloning(
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
-    policy = PolicyNet()
+    if policy is None:
+        policy = PolicyNet()
+
     device = policy.device
     optimizer = torch.optim.AdamW(policy.parameters(), lr=learning_rate, eps=1e-5)
 
