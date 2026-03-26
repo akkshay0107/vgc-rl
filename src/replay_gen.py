@@ -25,7 +25,7 @@ from heuristic import FuzzyHeuristic
 from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
 
-_TARGET_NAME = {-2: "default", -1: "self", 0: "ally", 1: "opp1", 2: "opp2"}
+_TARGET_NAME = {-2: "pkm2", -1: "pkm1", 0: "empty", 1: "opp1", 2: "opp2"}
 
 
 def print_valid_actions_from_mask(battle, action_mask):
