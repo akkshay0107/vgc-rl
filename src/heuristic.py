@@ -62,9 +62,19 @@ class FuzzyHeuristic(Player):
     ABILITY_TO_WEATHER = {v: k for k, v in WEATHER_ABILITIES.items()}
     ABILITY_TO_TERRAIN = {v: k for k, v in TERRAIN_ABILITIES.items()}
     BOOST_MULT = (
-        2.0 / 8.0, 2.0 / 7.0, 2.0 / 6.0, 2.0 / 5.0, 2.0 / 4.0, 2.0 / 3.0,
+        0.25,
+        2.0 / 7.0,
+        2.0 / 6.0,
+        0.4,
+        0.5,
+        2.0 / 3.0,
         1.0,
-        1.5, 2.0, 2.5, 3.0, 3.5, 4.0
+        1.5,
+        2.0,
+        2.5,
+        3.0,
+        3.5,
+        4.0,
     )
     WEATHER_TYPE = {
         Weather.SUNNYDAY: "FIRE",
@@ -84,11 +94,10 @@ class FuzzyHeuristic(Player):
         "obstruct",
         "silktrap",
     }
-    SPORE_MOVES = {"spore", "ragepowder"}
     # some sets omitted since they have one element and are
     # compared as strings below (like protect / trickroom / tailwind)
 
-    def __init__(self, k: int = 5, *args, **kwargs):
+    def __init__(self, k: int = 4, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.k = k
         self._defensive_cache = {}
@@ -112,14 +121,18 @@ class FuzzyHeuristic(Player):
 
     @staticmethod
     def _safe_stat(mon: Pokemon, stat: str, default: int = 100) -> int:
-        return mon.stats.get(stat, default) if hasattr(mon, "stats") and mon.stats else default
+        if mon.stats is None:
+            return default
+
+        val = mon.stats[stat]
+        return default if val is None else val
 
     @staticmethod
     def _safe_boost(mon: Pokemon, stat: str, default: int = 0) -> int:
-        return mon.boosts.get(stat, default) if hasattr(mon, "boosts") and mon.boosts else default
+        return mon.boosts.get(stat, default) if mon.boosts else default
 
     def _calculate_damage(
-        self, move: Move, attacker: Pokemon, defender: Pokemon, battle: DoubleBattle
+        self, move: Move, attacker: Pokemon, defender: Pokemon, battle: DoubleBattle, hits_multiple: bool = False
     ) -> float:
         if move.category == MoveCategory.STATUS:
             return 0.0
@@ -167,7 +180,7 @@ class FuzzyHeuristic(Player):
 
         # damage formula
         damage = (((2 * level / 5) + 2) * power * a_stat / d_stat) / 50 + 2
-        if move.id in self.SPREAD:
+        if hits_multiple:
             damage *= 0.75
 
         # weather multiplier
@@ -204,10 +217,10 @@ class FuzzyHeuristic(Player):
         return damage / max_hp
 
     def _offensive_rating(
-        self, move: Move, attacker: Pokemon, recepient: Pokemon, battle: DoubleBattle
+        self, move: Move, attacker: Pokemon, recepient: Pokemon, battle: DoubleBattle, hits_multiple: bool = False
     ) -> float:
-        dmg_pct = self._calculate_damage(move, attacker, recepient, battle)
-        rating = 5.0 * dmg_pct
+        dmg_pct = self._calculate_damage(move, attacker, recepient, battle, hits_multiple)
+        rating = dmg_pct
 
         # ko bonus
         current_hp_pct = (
@@ -216,23 +229,27 @@ class FuzzyHeuristic(Player):
             else 1.0
         )
         if dmg_pct >= current_hp_pct:
-            rating += 2.0
+            rating += 0.4
 
         # outspeed bonus
         if move.priority > 0:
-            rating += 1.0
+            rating += 0.2
         else:
             # Speed comparison
             a_is_op = attacker in battle.opponent_active_pokemon
             r_is_op = recepient in battle.opponent_active_pokemon
 
-            a_spe = self._safe_stat(attacker, "spe") * self._get_boost_mult(self._safe_boost(attacker, "spe"))
+            a_spe = self._safe_stat(attacker, "spe") * self._get_boost_mult(
+                self._safe_boost(attacker, "spe")
+            )
             if attacker.ability == "unburden" and not attacker.item:
                 a_spe *= 2.0
             if self._tailwind_turns(battle, a_is_op) > 0:
                 a_spe *= 2.0
 
-            r_spe = self._safe_stat(recepient, "spe") * self._get_boost_mult(self._safe_boost(recepient, "spe"))
+            r_spe = self._safe_stat(recepient, "spe") * self._get_boost_mult(
+                self._safe_boost(recepient, "spe")
+            )
             if recepient.ability == "unburden" and not recepient.item:
                 r_spe *= 2.0
             if self._tailwind_turns(battle, r_is_op) > 0:
@@ -240,10 +257,10 @@ class FuzzyHeuristic(Player):
 
             if self._trickroom_turns(battle) > 0:
                 if a_spe < r_spe:
-                    rating += 0.5
+                    rating += 0.1
             else:
                 if a_spe > r_spe:
-                    rating += 0.5
+                    rating += 0.1
 
         return rating * move.accuracy
 
@@ -301,32 +318,32 @@ class FuzzyHeuristic(Player):
         # If mult < 1.0 (drop/bad speed), 1.0 - mult > 0 -> positive score (incentivize switch)
         # If mult > 1.0 (boost/good speed), 1 / mult - 1 < 0 -> negative score (penalize switch)
         if mult < 1.0:
-            score += (1.0 - mult) * 5.0  # Weight for negative drops
+            score += 1.0 - mult
         else:
             obm = 1.0 / mult
-            score += (obm - 1.0) * 2.5  # Weight for positive boosts (penalty to switch)
+            score += (obm - 1.0) * 0.4  # reduced penalty for switching out with positive stats
 
         # incentivize switching out if affected by negative effects
         if Effect.ENCORE in active_mon.effects and battle.available_moves[pos]:
             locked_move = battle.available_moves[pos][0]
             if locked_move.category == MoveCategory.STATUS:
-                score += 4.0
+                score += 0.6
             else:
                 type_effectiveness = [
                     opp.damage_multiplier(locked_move)
                     for opp in battle.opponent_active_pokemon
                     if opp is not None
                 ]
-                score += max(0.0, 4.0 - sum(type_effectiveness) / len(type_effectiveness))
+                score += max(0.0, 0.8 - sum(type_effectiveness) / len(type_effectiveness))
 
         if Effect.TAUNT in active_mon.effects:
             status_moves = [
                 m for m in active_mon.moves.values() if m.category == MoveCategory.STATUS
             ]
-            score += float(len(status_moves))
+            score += len(status_moves) / 5.0
 
         if Effect.CONFUSION in active_mon.effects:
-            score += 1.0
+            score += 0.15
 
         defensive_rating_active = self._get_defensive_rating(battle, active_mon)
         switch_mon = list(battle.team.values())[action - 1]
@@ -336,19 +353,19 @@ class FuzzyHeuristic(Player):
 
         weather_type = self.ABILITY_TO_WEATHER.get(switch_mon.ability)
         if weather_type and self._active_weather_type(battle)[0] != weather_type:
-            score += 2.0
+            score += 0.4
 
         terrain_type = self.ABILITY_TO_TERRAIN.get(switch_mon.ability)
         if terrain_type and self._active_terrain_type(battle)[0] != terrain_type:
-            score += 2.0
+            score += 0.3
 
         if switch_mon.ability == "intimidate":
             for op in battle.opponent_active_pokemon:
                 if op and not op.fainted:
                     if op.ability in ["defiant", "competitive"]:
-                        score -= 1.0
+                        score -= 0.3
                     elif self._safe_stat(op, "atk") > self._safe_stat(op, "spa"):
-                        score += 1.0
+                        score += 0.15
 
         return score
 
@@ -401,35 +418,49 @@ class FuzzyHeuristic(Player):
                         break
 
         if not targets:
-            return -1.0
+            return -10.0
 
         total_rating = 0.0
+        hits_multiple = len(targets) > 1
         for t in targets:
             if t is None or t.fainted:
                 continue
-            rating = self._offensive_rating(move, mon, t, battle)
+            rating = self._offensive_rating(move, mon, t, battle, hits_multiple)
+
+            if move.drain > 0 and mon.current_hp_fraction < 0.7:
+                rating *= 1.25
+
             # Discourage stat drops on Defiant / Competitive
             if move.id in self.STAT_DROPPING:
                 if t.ability == "defiant" or t.ability == "competitive":
-                    rating -= 2.0
+                    rating -= 0.15
 
             if t in battle.active_pokemon:
                 rating *= -2.0  # penalize damage to our own teammates
 
             if move.id in self.PIVOT:
                 defensive_rating_active = self._get_defensive_rating(battle, mon)
-                rating += max(0.0, (defensive_rating_active - 0.2) * 5.0)
+                rating += max(0.0, 0.4 - defensive_rating_active)
+
+            if move.id == "fakeout":
+                if not mon.first_turn:
+                    return -5.0
+                if t is None or t.fainted or t in battle.active_pokemon:
+                    return -10.0
+                if self._is_immune_to_fake_out(t):
+                    return -5.0
+                rating += 0.5
 
             total_rating += rating
 
+        if hits_multiple:
+            total_rating *= 0.8
+    
         return total_rating
 
     def _score_status_move(
         self, battle: DoubleBattle, move: Move, mon: Pokemon, target_idx: int, pos: int
     ) -> float:
-        score = 0.5  # base score for a status move
-
-        # determine target
         target = None
         if target_idx == 1:
             target = battle.opponent_active_pokemon[0]
@@ -440,72 +471,71 @@ class FuzzyHeuristic(Player):
         elif target_idx == -2:
             target = battle.active_pokemon[1]
 
-        if move.id == "fakeout":
-            if not mon.first_turn:
-                return -1.0
-            if target is None or target.fainted:
-                return -1.0
-            if self._is_immune_to_fake_out(target):
-                return -1.0
-            if target.ability == "innerfocus":
-                return -1.0
-            score += 4.0
+        if target is None:
+            return -10.0
+
+        score = 0.0
 
         if move.id == "tailwind":
             if self._tailwind_turns(battle) > 0:
                 return -5.0
             if self._trickroom_turns(battle) > 0:
                 if self._trickroom_turns(battle) == 1:
-                    score += 2.0
+                    score += 0.2
                 else:
                     return -5.0
             if self._is_slower_than_opponents(battle, mon):
-                score += 3.0
+                score += 0.3
 
         if move.id == "trickroom":
             tr_turns = self._trickroom_turns(battle)
             we_are_slower = self._is_slower_than_opponents(battle, mon)
             if tr_turns > 0:
                 if not we_are_slower:  # We are faster, TR is bad for us
-                    score += 4.0  # Encourage reversing
+                    score += 0.4  # Encourage reversing
                 else:
                     return -5.0  # TR is good for us, don't reverse
             else:
                 if we_are_slower:
-                    score += 4.0  # Encourage setting TR
+                    score += 0.6  # Encourage setting TR
                 else:
-                    return -2.0  # We are faster, don't set TR
+                    return -5.0
 
         if move.id in self.SETUP:
-            is_setup = False
+            boost_sum = 0
             if move.boosts:
                 for boost in move.boosts:
-                    if self._safe_boost(mon, boost) >= 2:
-                        is_setup = True
-            if is_setup:
-                return 0.1
-            score += 2.0
+                    boost_sum += self._safe_boost(mon, boost)
+
+            if boost_sum <= -3 or boost_sum >= 2:
+                return 0.05
+            else:
+                return 0.3 - (
+                    abs(boost_sum) / 10.0
+                )  # incentivize switching in case of harsh negative
 
         if move.id == "taunt":
             if target is None or target.fainted:
-                return -5.0
+                return -10.0
             if target in battle.active_pokemon:
-                return -15.0
+                return -10.0
             if Effect.TAUNT in target.effects:
                 return -5.0
             if self._is_immune_to_prankster(target) and mon.ability == "prankster":
                 return -5.0
-            has_tr_or_setup = any(
-                m.id == "trickroom" or m.id in self.SETUP for m in target.moves.values()
-            )
-            if has_tr_or_setup:
-                score += 3.0
+
+            has_tr = any(m.id == "trickroom" for m in target.moves.values())
+            has_setup = any(m.id in self.SETUP for m in target.moves.values())
+            if has_tr:
+                return 0.3
+            elif has_setup:
+                return 0.15
 
         if move.id == "encore":
             if target is None or target.fainted:
-                return -5.0
+                return -10.0
             if target in battle.active_pokemon:
-                return -15.0
+                return -10.0
             if Effect.ENCORE in target.effects:
                 return -5.0
             if self._is_immune_to_prankster(target) and mon.ability == "prankster":
@@ -513,15 +543,13 @@ class FuzzyHeuristic(Player):
 
             # Find the last move used by the target
             last_move = self._get_last_move(battle, target)
-
-            # Special case for Protect since we can detect it even without logs
             if not last_move and target.protect_counter > 0:
-                score += 4.0
+                score += 0.6
                 return score
 
             if last_move:
                 if last_move.category == MoveCategory.STATUS:
-                    score += 4.0
+                    score += 0.5
                 else:
                     avg_dmg = 0.0
                     count = 0
@@ -532,41 +560,29 @@ class FuzzyHeuristic(Player):
                     if count > 0:
                         avg_dmg /= count
 
-                    if avg_dmg < 0.3:
-                        score += 4.0
-                    else:
-                        score -= 2.0
+                    score += 2.0 * (0.25 - avg_dmg**2)
             else:
                 return -1.0
 
         if move.id == "haze":
-
+            # see logic for switching out
             def get_mon_boost_value(mon):
                 pref_atk = "atk" if mon.base_stats["atk"] >= mon.base_stats["spa"] else "spa"
                 mult = self._get_boost_mult(self._safe_boost(mon, pref_atk))
                 if mult > 1.0:
-                    return (mult - 1.0) * 2.5  # Positive value for boosts
+                    return (mult - 1.0) * 0.4
                 else:
-                    return (mult - 1.0) * 5.0  # Negative value for drops
+                    return mult - 1.0
 
             our_value = sum(get_mon_boost_value(p) for p in battle.active_pokemon if p)
             opp_value = sum(get_mon_boost_value(p) for p in battle.opponent_active_pokemon if p)
 
-            # Net utility of Haze: (What they lose) - (What we lose)
-            net_utility = opp_value - our_value
-            if net_utility > 0:
-                score += net_utility * 1.5
-            else:
-                score -= 2.0
+            score += 0.2 * (opp_value - our_value)
 
         if move.id in self.PROTECT:
             if mon.protect_counter > 0:
-                return -1.0
-            score += 1.0
-
-        if move.id in self.SPORE_MOVES:
-            if target and self._is_immune_to_powder(target):
-                return -5.0
+                return -0.3
+            score += 0.25
 
         return score
 
@@ -579,11 +595,15 @@ class FuzzyHeuristic(Player):
 
         partner_spe = 0
         if partner:
-            partner_spe = self._safe_stat(partner, "spe") * self._get_boost_mult(self._safe_boost(partner, "spe"))
+            partner_spe = self._safe_stat(partner, "spe") * self._get_boost_mult(
+                self._safe_boost(partner, "spe")
+            )
 
         for op in battle.opponent_active_pokemon:
             if op and not op.fainted:
-                op_spe = self._safe_stat(op, "spe") * self._get_boost_mult(self._safe_boost(op, "spe"))
+                op_spe = self._safe_stat(op, "spe") * self._get_boost_mult(
+                    self._safe_boost(op, "spe")
+                )
                 if mon_spe < op_spe or (partner_spe > 0 and partner_spe < op_spe):
                     return True
         return False
@@ -652,55 +672,57 @@ class FuzzyHeuristic(Player):
         if (m0.id == "fakeout" and (m1.id in self.SETUP or m1.id == "trickroom")) or (
             m1.id == "fakeout" and (m0.id in self.SETUP or m0.id == "trickroom")
         ):
-            score += 3.0
+            score += 0.3
 
         if (m0.id in self.REDIRECTION and (m1.id in self.SETUP or m1.id == "trickroom")) or (
             m1.id in self.REDIRECTION and (m0.id in self.SETUP or m0.id == "trickroom")
         ):
-            score += 3.0
+            score += 0.3
 
         if (m0.id == "helpinghand" and m1.category != MoveCategory.STATUS) or (
             m1.id == "helpinghand" and m0.category != MoveCategory.STATUS
         ):
-            score += 2.0
+            score += 0.15
 
         is_m0_speed = m0.id in self.SPEED_CONTROL
         is_m1_speed = m1.id in self.SPEED_CONTROL
         if (is_m0_speed and m1.category != MoveCategory.STATUS) or (
             is_m1_speed and m0.category != MoveCategory.STATUS
         ):
-            score += 2.0
+            score += 0.15
 
         if m0.id == "beatup" and t0 == battle.active_pokemon[1]:
             p1 = battle.active_pokemon[1]
             if p1 and (p1.ability == "stamina" or any(m == "ragefist" for m in p1.moves)):
-                score += 5.0
+                score += 0.3
         if m1.id == "beatup" and t1 == battle.active_pokemon[0]:
             p0 = battle.active_pokemon[0]
             if p0 and (p0.ability == "stamina" or any(m == "ragefist" for m in p0.moves)):
-                score += 5.0
+                score += 0.3
 
         if m0.id == "feint" and t0 and t0 == t1:
-            score += 3.0
-        if m1.id in ["feint"] and t1 and t1 == t0:
-            score += 3.0
+            score += 0.15
+        if m1.id == "feint" and t1 and t1 == t0:
+            score += 0.15
 
         if (
             m0.id == "faketears"
             and t0
             and t0 == t1
             and battle.active_pokemon[1]
-            and self._safe_stat(battle.active_pokemon[1], "spa") > self._safe_stat(battle.active_pokemon[1], "atk")
+            and self._safe_stat(battle.active_pokemon[1], "spa")
+            > self._safe_stat(battle.active_pokemon[1], "atk")
         ):
-            score += 3.0
+            score += 0.2
         if (
             m1.id == "faketears"
             and t1
             and t1 == t0
             and battle.active_pokemon[0]
-            and self._safe_stat(battle.active_pokemon[0], "spa") > self._safe_stat(battle.active_pokemon[0], "atk")
+            and self._safe_stat(battle.active_pokemon[0], "spa")
+            > self._safe_stat(battle.active_pokemon[0], "atk")
         ):
-            score += 3.0
+            score += 0.2
 
         opp_has_redirection = any(
             any(m in self.REDIRECTION for m in op.moves.keys())
@@ -709,23 +731,16 @@ class FuzzyHeuristic(Player):
         )
         if opp_has_redirection:
             if m0.id in self.SPREAD:
-                score += 2.0
+                score += 0.2
             if m1.id in self.SPREAD:
-                score += 2.0
-
-        is_m0_speed = m0.id in self.SPEED_CONTROL
-        is_m1_speed = m1.id in self.SPEED_CONTROL
-        if (is_m0_speed and m1.category != MoveCategory.STATUS) or (
-            is_m1_speed and m0.category != MoveCategory.STATUS
-        ):
-            score += 2.0
+                score += 0.2
 
         if t0 and t0 == t1 and any(t0 == op for op in battle.opponent_active_pokemon if op):
             hp_pct = t0.current_hp / t0.max_hp if (t0.max_hp and t0.max_hp > 0) else 1.0
             dmg0 = self._calculate_damage(m0, battle.active_pokemon[0], t0, battle)  # type: ignore
             dmg1 = self._calculate_damage(m1, battle.active_pokemon[1], t1, battle)  # type: ignore
             if dmg0 < hp_pct and dmg1 < hp_pct and (dmg0 + dmg1) >= hp_pct:
-                score += 4.0
+                score += 0.2
 
         if m0.id in self.PROTECT and m1.id in self.PROTECT:
             opp_has_fake_out = any(
@@ -738,9 +753,9 @@ class FuzzyHeuristic(Player):
             )
 
             if opp_has_fake_out and not opp_has_setup:
-                score += 3.0
+                score += 0.3
             else:
-                score -= 5.0
+                score -= 0.4
 
         return score
 
@@ -782,13 +797,15 @@ class FuzzyHeuristic(Player):
         scores_t = torch.tensor(scores, dtype=torch.float32)
         kc = min(len(scores), self.k)
         top_scores, top_indices = torch.topk(scores_t, kc)
+        # print(f"\n {top_scores} \n")
 
-        temp = 2.0
-        if torch.isnan(top_scores / temp).any():
+        bias, temp = 0.5, 2.0
+        logits = (top_scores - bias) / temp
+        if torch.isnan(logits).any():
             # fallback if something goes wrong
             idx = 0
         else:
-            idx = torch.distributions.Categorical(logits=top_scores / temp).sample().item()
+            idx = torch.distributions.Categorical(logits=logits).sample().item()
 
         chosen_pair = pairs[top_indices[idx].item()]  # type: ignore
         o0 = Gen9VGCEnv._action_to_order_individual(chosen_pair[0], battle, fake=False, pos=0)
@@ -839,15 +856,6 @@ class FuzzyHeuristic(Player):
             return True
         return False
 
-    def _is_immune_to_powder(self, opp: Pokemon | None) -> bool:
-        if opp is None:
-            return False
-        if PokemonType.GRASS in opp.types:
-            return True
-        if getattr(opp, "item", "") == "safetygoggles":
-            return True
-        return False
-
     def _is_immune_to_prankster(self, opp: Pokemon | None) -> bool:
         if opp is None:
             return False
@@ -895,30 +903,16 @@ class FuzzyHeuristic(Player):
         return 0
 
     def _stab_multiplier(self, mon: Pokemon, move: Move) -> float:
-        has_adaptability = mon.ability == "adaptability"
-
-        # Get original types
-        original_types = mon.original_types
-
-        is_original_stab = move.type in original_types
+        is_original_stab = move.type in mon.original_types
 
         if not mon.is_terastallized:
-            if is_original_stab:
-                return 2.0 if has_adaptability else 1.5
-            return 1.0
+            return mon.stab_multiplier if is_original_stab else 1.0
 
-        # Terastallized
-        is_tera_stab = move.type == mon.tera_type
-        # TODO: tera stellar calcs
+        if move.type == mon.tera_type:
+            return mon.stab_multiplier
 
-        if is_tera_stab:
-            if is_original_stab:  # Tera matches original type
-                return 2.25 if has_adaptability else 2.0
-            else:  # Tera does not match original type
-                return 2.0 if has_adaptability else 1.5
-
-        if is_original_stab:  # Move matches original type but not Tera type
-            return 2.0 if has_adaptability else 1.5
+        if is_original_stab:
+            return 2.0 if mon.ability == "adaptability" else 1.5
 
         return 1.0
 
@@ -947,7 +941,6 @@ if __name__ == "__main__":
         fmt = "gen9vgc2025regh"
 
         bot_player = FuzzyHeuristic(
-            k=10,
             account_configuration=AccountConfiguration("FuzzyBot", None),
             battle_format=fmt,
             server_configuration=LocalhostServerConfiguration,
@@ -958,7 +951,7 @@ if __name__ == "__main__":
 
         terminal_player = TerminalPlayer(
             save_dir="/tmp/replays",
-            account_configuration=AccountConfiguration("TerminalHuman", None),
+            account_configuration=AccountConfiguration("TermPlayer", None),
             battle_format=fmt,
             server_configuration=LocalhostServerConfiguration,
             team=team,
