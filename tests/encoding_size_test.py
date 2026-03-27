@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from poke_env.battle.pokemon import Pokemon
 from poke_env.teambuilder import TeambuilderPokemon
 
-from encoder import Encoder
+import observation_builder
 
 if __name__ == "__main__":
     # Example of pokemon string exceeding 512 tokens
@@ -27,9 +27,9 @@ if __name__ == "__main__":
     teambuilder_mon = TeambuilderPokemon.from_showdown(pokepaste_string)
     pokemon = Pokemon(gen=9, teambuilder=teambuilder_mon)
 
-    pokemon_str = Encoder._get_pokemon_as_text(pokemon, cond=2)
+    pokemon_str = observation_builder._get_pokemon_text(pokemon, cond=2)
     print(len(pokemon_str[0]), len(pokemon_str[1]))
-    tokens = tuple(Encoder.tokenizer.encode(s, add_special_tokens=True) for s in pokemon_str)
+    tokens = tuple(observation_builder.tokenizer.encode(s, add_special_tokens=True) for s in pokemon_str)
     print(len(tokens[0]), len(tokens[1]))
     print("-" * 100)
     print(pokemon_str)
