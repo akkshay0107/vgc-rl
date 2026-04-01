@@ -254,11 +254,12 @@ def _get_locals(battle: DoubleBattle):
     2 = psychic terrain turns
     3 = sun turns
     4 = rain turns
-    5 = tailwind turns
-    6 = aurora veil turns
+    5 = snow turns
+    6 = tailwind turns
+    7 = aurora veil turns
     """
-    p1_row = [0.0] * 7
-    p2_row = [0.0] * 7
+    p1_row = [0.0] * 8
+    p2_row = [0.0] * 8
 
     # Global effects
     trick_room_turns = 0
@@ -279,13 +280,17 @@ def _get_locals(battle: DoubleBattle):
 
     sun_turns = 0
     rain_turns = 0
+    snow_turns = 0
     if battle._weather:
         rain_start = battle._weather.get(Weather.RAINDANCE, -1)
         sun_start = battle._weather.get(Weather.SUNNYDAY, -1)
+        snow_start = battle._weather.get(Weather.SNOW, -1)
         if rain_start >= 0:
             rain_turns = 5 - (battle.turn - rain_start)
         elif sun_start >= 0:
             sun_turns = 5 - (battle.turn - sun_start)
+        elif snow_start >= 0:
+            snow_turns = 5 - (battle.turn - snow_start)
 
     global_effects = [
         trick_room_turns,
@@ -293,8 +298,9 @@ def _get_locals(battle: DoubleBattle):
         psychic_terrain_turns,
         sun_turns,
         rain_turns,
+        snow_turns,
     ]
-    for i in range(5):
+    for i in range(6):
         p1_row[i] = global_effects[i]
         p2_row[i] = global_effects[i]
 
@@ -308,8 +314,8 @@ def _get_locals(battle: DoubleBattle):
             tailwind_turns = 4 - (battle.turn - tailwind_start)
         if veil_start >= 0:
             veil_turns = 5 - (battle.turn - veil_start)
-    p1_row[5] = tailwind_turns
-    p1_row[6] = veil_turns
+    p1_row[6] = tailwind_turns
+    p1_row[7] = veil_turns
 
     # Player 2 local effects
     tailwind_turns = 0
@@ -321,8 +327,8 @@ def _get_locals(battle: DoubleBattle):
             tailwind_turns = 4 - (battle.turn - tailwind_start)
         if veil_start >= 0:
             veil_turns = 5 - (battle.turn - veil_start)
-    p2_row[5] = tailwind_turns
-    p2_row[6] = veil_turns
+    p2_row[6] = tailwind_turns
+    p2_row[7] = veil_turns
 
     return p1_row, p2_row
 
@@ -334,6 +340,7 @@ def _get_field_text(battle: DoubleBattle) -> str:
         "Psychic Terrain (prevents priority moves by grounded Pokémon and boosts Psychic moves by 30%), "
         "Sunny Weather (boosts Fire moves by 50%, weakens Water moves by 50%), "
         "Rainy Weather (boosts Water moves by 50%, weakens Fire moves by 50%), "
+        "Snowy Weather (boosts Defense of Ice types by 50%), "
         "Tailwind (doubles team speed), "
         "Aurora Veil (reduces damage taken by team by 33%)."
     )
@@ -346,6 +353,7 @@ def _get_field_text(battle: DoubleBattle) -> str:
         "Psychic Terrain",
         "Sunny Weather",
         "Rainy Weather",
+        "Snowy Weather",
         "Tailwind",
         "Aurora Veil",
     ]
@@ -383,7 +391,7 @@ def _get_info_text(p1_tera: Pokemon | None, p2_tera: Pokemon | None) -> str:
     return p1_str + p2_str
 
 
-@lru_cache(maxsize=200_000)
+@lru_cache(maxsize=50_000)
 def _encode_one(text: str):
     enc = tokenizer(
         text,
@@ -429,7 +437,14 @@ def from_battle(battle: AbstractBattle):
 
     info_txt = _get_info_text(p1_tera, opp_tera)
 
-    # Sequence ordering: Field, Info, P1 (Texts), Opp (Texts), P1 (Nums), Opp (Nums)
+    p1_field_nums, p2_field_nums = _get_locals(battle)
+    p1_tera_info = 0 if p1_tera is None else 1
+    p2_tera_info = 0 if opp_tera is None else 1
+    field_num_row_raw = torch.tensor([*p1_field_nums, p1_tera_info, *p2_field_nums, p2_tera_info])
+    field_num_row = torch.cat(
+        [field_num_row_raw, torch.zeros(TINYBERT_SZ - len(field_num_row_raw))]
+    )
+
     p1_flat = [text for pair in p1_txt_pairs for text in pair]  # 12
     opp_flat = [text for pair in opp_txt_pairs for text in pair]  # 12
 
@@ -440,7 +455,7 @@ def from_battle(battle: AbstractBattle):
     num_rows = torch.tensor(p1_arr + opp_arr)  # 6 + 6 = 12 rows
     num_emb = torch.cat([num_rows, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)  # 12 rows
 
-    return torch.cat([text_emb, num_emb], dim=0)  # 26 + 12 = 38 rows
+    return torch.cat([text_emb, num_emb, field_num_row.unsqueeze(0)], dim=0)
 
 
 def get_action_mask(battle: AbstractBattle):

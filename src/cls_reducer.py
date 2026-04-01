@@ -62,17 +62,27 @@ class CLSReducer(nn.Module):
             enable_nested_tensor=False,  # annoying warning
         )
 
-        # part_ids does not apply to cls and field
+        # part_ids does not apply to cls and field text
+        # Transformer indices (after cat cls at dim 0):
+        # 0: CLS
+        # 1: Field Text
+        # 2: Info Text
+        # 3-14: P1 Text (12)
+        # 15-26: Opp Text (12)
+        # 27-32: P1 Num (6)
+        # 33-38: Opp Num (6)
+        # 39: Field Num (1)
+
         part_ids = torch.cat(
             [
-                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),
-                torch.tensor([self.NUM], dtype=torch.long).repeat(12),
+                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),  # P1 Text
+                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),  # Opp Text
+                torch.tensor([self.NUM], dtype=torch.long).repeat(13),  # P1+Opp+Field Nums
             ]
         )
         self.register_buffer("part_ids", part_ids, persistent=False)
 
-        # type_ids covers tokens from index 0 to 38 (39 tokens)
-        type_ids = torch.zeros(39, dtype=torch.long)
+        type_ids = torch.zeros(40, dtype=torch.long)
         type_ids[0] = self.CLS
         type_ids[1:3] = self.FIELD
 
@@ -99,6 +109,9 @@ class CLSReducer(nn.Module):
         type_ids[34] = self.OPP_SLOT_1
         type_ids[35:37] = self.OPP_BENCH
         type_ids[37:39] = self.OPP_DROPPED
+
+        # Field Nums (39)
+        type_ids[39] = self.FIELD
         self.register_buffer("type_ids", type_ids, persistent=False)
 
         self._init_weights()
@@ -133,7 +146,7 @@ class CLSReducer(nn.Module):
 
         global_ctx = x.mean(dim=1, keepdim=True)
         cls = self.cls_base.expand(B, -1, -1) + self.cls_conditioner(global_ctx)
-        x = torch.cat([cls, x], dim=1)  # (B, 39, D)
+        x = torch.cat([cls, x], dim=1)  # (B, 40, D)
 
         type_e = self.type_emb(self.type_ids).unsqueeze(0).expand(B, -1, -1)
         part_e = self.part_emb(self.part_ids).unsqueeze(0).expand(B, -1, -1)

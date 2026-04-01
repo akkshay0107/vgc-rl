@@ -8,7 +8,7 @@ from poke_env.battle.status import Status
 # 1 field row + 1 info row + 3 tokens * 12 pokemon = 38
 TINYBERT_SZ = 624
 EXTRA_SZ = 29
-OBS_DIM = (38, TINYBERT_SZ)
+OBS_DIM = (39, TINYBERT_SZ)
 
 # Action space parameters
 NUM_SWITCHES = 6
