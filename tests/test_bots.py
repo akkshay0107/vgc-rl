@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import sys
 from pathlib import Path
@@ -11,7 +12,7 @@ from heuristic import FuzzyHeuristic
 from teams import RandomTeamFromPool
 
 
-async def main():
+async def main(n_battles: int):
     root_dir = Path(__file__).resolve().parent.parent
     teams_dir = root_dir / "teams"
     if not teams_dir.exists():
@@ -50,7 +51,6 @@ async def main():
     n = len(players)
     winrate_matrix = [[0.0 for _ in range(n)] for _ in range(n)]
 
-    n_battles = 100
     print(f"Starting {n * (n - 1) // 2 * n_battles} matches total...")
 
     for i in range(n):
@@ -93,4 +93,12 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Battle bots and calculate winrates.")
+    parser.add_argument(
+        "-b",
+        type=int,
+        default=100,
+        help="Number of battles between any two sets of bots (default: 100)",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(args.b))
