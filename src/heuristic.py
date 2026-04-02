@@ -103,10 +103,9 @@ class FuzzyHeuristic(Player):
     OPPONENT_TARGETED = {"taunt", "encore", "yawn"}
     ALLY_TARGETED = {"helpinghand", "followme", "ragepowder", "wideguard", "coaching"}
 
-    def __init__(self, k: int = 4, training: bool = False, *args, **kwargs):
+    def __init__(self, k: int = 4, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.k = k
-        self.training = training
         self._defensive_cache = {}
 
     def _get_actions(self, mask: torch.Tensor, poke_no: int) -> NDArray[np.int64]:
@@ -434,7 +433,7 @@ class FuzzyHeuristic(Player):
                 target.current_hp / target.max_hp if (target.max_hp and target.max_hp > 0) else 1.0
             )
             if pre < hp_pct and post >= hp_pct:
-                offensive_gain += 0.2
+                offensive_gain += 0.3
 
         return (
             defensive_gain + offensive_gain - 0.1
@@ -591,7 +590,9 @@ class FuzzyHeuristic(Player):
             if boost_sum <= -3 or boost_sum >= 2:
                 return 0.05
             else:
-                return 0.3 - (abs(boost_sum) / 10.0)
+                defensive_rating = self._get_defensive_rating(battle, mon)
+                # scale setup score by defensive safety
+                return (0.3 - (abs(boost_sum) / 10.0)) + (0.3 - defensive_rating)
 
         elif move.id == "taunt":
             if target is None:
@@ -675,7 +676,7 @@ class FuzzyHeuristic(Player):
                                     pressure += self._calculate_damage(
                                         mv, op, ally, battle, hits_multiple=True
                                     )
-            score = 0.1 * pressure
+            score = 0.3 * pressure
             if all(has_spread):
                 score += 0.10
 
@@ -794,15 +795,33 @@ class FuzzyHeuristic(Player):
         if not m0 or not m1:
             return 0.0
 
-        if (m0.id == "fakeout" and (m1.id in self.SETUP or m1.id == "trickroom")) or (
-            m1.id == "fakeout" and (m0.id in self.SETUP or m0.id == "trickroom")
+        opp_has_spread = any(
+            any(m_id in self.SPREAD for m_id in op.moves.keys())
+            for op in battle.opponent_active_pokemon
+            if op
+        )
+
+        is_m0_redirection = m0.id in self.REDIRECTION
+        is_m1_redirection = m1.id in self.REDIRECTION
+        redirection_multiplier = 0.5 if opp_has_spread else 1.0
+
+        if (m0.id == "fakeout" and m1.id in self.SETUP) or (
+            m1.id == "fakeout" and m0.id in self.SETUP
         ):
             score += 0.60
-
-        if (m0.id in self.REDIRECTION and (m1.id in self.SETUP or m1.id == "trickroom")) or (
-            m1.id in self.REDIRECTION and (m0.id in self.SETUP or m0.id == "trickroom")
+        if (m0.id == "fakeout" and m1.id == "trickroom") or (
+            m1.id == "fakeout" and m0.id == "trickroom"
         ):
             score += 0.80
+
+        if (is_m0_redirection and m1.id in self.SETUP) or (
+            is_m1_redirection and m0.id in self.SETUP
+        ):
+            score += 0.60 * redirection_multiplier
+        if (is_m0_redirection and m1.id == "trickroom") or (
+            is_m1_redirection and m0.id == "trickroom"
+        ):
+            score += 0.80 * redirection_multiplier
 
         if m0.id == "helpinghand" and m1.category != MoveCategory.STATUS and t1:
             dmg = self._calculate_damage(m1, battle.active_pokemon[1], t1, battle)  # type: ignore
@@ -932,16 +951,13 @@ class FuzzyHeuristic(Player):
         top_scores, top_indices = torch.topk(scores_t, kc)
         # print(f"\n {top_scores} \n")
 
-        if self.training:
-            bias, temp = 0.5, 2.0
-            logits = (top_scores - bias) / temp
-            if torch.isnan(logits).any():
-                # fallback if something goes wrong
-                idx = 0
-            else:
-                idx = torch.distributions.Categorical(logits=logits).sample().item()
-        else:
+        bias, temp = 0.5, 2.0
+        logits = (top_scores - bias) / temp
+        if torch.isnan(logits).any():
+            # fallback if something goes wrong
             idx = 0
+        else:
+            idx = torch.distributions.Categorical(logits=logits).sample().item()
 
         chosen_pair = pairs[top_indices[idx].item()]  # type: ignore
         o0 = Gen9VGCEnv._action_to_order_individual(chosen_pair[0], battle, fake=False, pos=0)

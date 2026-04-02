@@ -44,7 +44,7 @@ async def main(n_battles: int):
         create_player(RandomPlayer, "Random"),
         create_player(MaxBasePowerPlayer, "MaxBP"),
         create_player(SimpleHeuristicsPlayer, "SimpleH"),
-        create_player(FuzzyHeuristic, "FuzzyH"),
+        create_player(FuzzyHeuristic, "FuzzyH", k=1),
     ]
 
     bot_names = ["Random", "MaxBP", "SimpleH", "FuzzyH"]
