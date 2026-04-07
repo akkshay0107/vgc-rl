@@ -103,7 +103,16 @@ def _modify_mask(action_mask: torch.Tensor, action1):
 def get_opponent(fmt: str, team: Teambuilder) -> Player:
     name = "p" + uuid.uuid4().hex[:16]  # prevent off chance of no letters
     num = random.random()
-    if num < 0.7:
+    if num < 0.35:
+        return FuzzyHeuristic(
+            k=2,
+            account_configuration=AccountConfiguration(name, None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+        )
+    elif num < 0.7:
         return SimpleHeuristicsPlayer(
             account_configuration=AccountConfiguration(name, None),
             battle_format=fmt,
@@ -336,7 +345,7 @@ async def main():
     elif args.fuzzy:
         save_dir = "./replays/fuzzy_heuristic"
         strategy = FuzzyHeuristic(
-            k=10,
+            k=3,
             account_configuration=AccountConfiguration("Fuzzy_Strategy", None),
             battle_format=fmt,
             server_configuration=LocalhostServerConfiguration,

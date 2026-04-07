@@ -75,8 +75,9 @@ class CLSReducer(nn.Module):
 
         part_ids = torch.cat(
             [
-                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),  # P1 Text
-                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),  # Opp Text
+                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(
+                    12
+                ),  # P1 then Opp text
                 torch.tensor([self.NUM], dtype=torch.long).repeat(13),  # P1+Opp+Field Nums
             ]
         )
