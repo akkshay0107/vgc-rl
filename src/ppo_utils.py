@@ -37,6 +37,7 @@ class PPOConfig:
     # Minimum sampling weight for any opponent (prevents starvation).
     min_pool_win_rate_weight: float = 0.1
     pool_cache_size: int = 5
+    self_play_prob: float = 0.5
 
 
 class RolloutBuffer:
@@ -98,20 +99,6 @@ class RolloutBuffer:
             "returns": returns.reshape(-1),
             "action_masks": flat_action_masks,
         }
-
-
-def get_winrate(buffer: RolloutBuffer):
-    terminal_rewards = [r.item() for r, d in zip(buffer.rewards, buffer.dones) if d.item() == 1.0]
-    if not terminal_rewards:
-        return {"win_rate": 0.0, "wins": 0, "losses": 0}
-
-    wins = sum(1 for r in terminal_rewards if r > 0)
-    losses = sum(1 for r in terminal_rewards if r < 0)
-    return {
-        "win_rate": wins / len(terminal_rewards),
-        "wins": wins,
-        "losses": losses,
-    }
 
 
 def save_checkpoint(path: Path, episode: int, policy: PolicyNet, optimizer=None, scheduler=None):
