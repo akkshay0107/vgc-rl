@@ -85,9 +85,9 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         The action is a list in doubles, and the individual action mapping is
         as follows, where each 5-long range for a move corresponds to a
         different target (-2, -1, 0, 1, 2).
-        -2 = default
-        -1 = self
-        0 = ally
+        -2 = pkm2
+        -1 = pkm1
+        0 = empty
         1 = opponent1
         2 = opponent2
 

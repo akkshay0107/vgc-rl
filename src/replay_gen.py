@@ -21,10 +21,11 @@ from poke_env.teambuilder import Teambuilder
 
 import observation_builder
 from env import Gen9VGCEnv
+from heuristic import FuzzyHeuristic
 from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
 
-_TARGET_NAME = {-2: "default", -1: "self", 0: "ally", 1: "opp1", 2: "opp2"}
+_TARGET_NAME = {-2: "pkm2", -1: "pkm1", 0: "empty", 1: "opp1", 2: "opp2"}
 
 
 def print_valid_actions_from_mask(battle, action_mask):
@@ -102,7 +103,16 @@ def _modify_mask(action_mask: torch.Tensor, action1):
 def get_opponent(fmt: str, team: Teambuilder) -> Player:
     name = "p" + uuid.uuid4().hex[:16]  # prevent off chance of no letters
     num = random.random()
-    if num < 0.7:
+    if num < 0.35:
+        return FuzzyHeuristic(
+            k=2,
+            account_configuration=AccountConfiguration(name, None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+        )
+    elif num < 0.7:
         return SimpleHeuristicsPlayer(
             account_configuration=AccountConfiguration(name, None),
             battle_format=fmt,
@@ -266,6 +276,7 @@ async def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--mbp", action="store_true", help="Run with Max Base Power strategy")
     group.add_argument("--sh", action="store_true", help="Run with Simple Heuristic strategy")
+    group.add_argument("--fuzzy", action="store_true", help="Run with Fuzzy Heuristic strategy")
     group.add_argument(
         "--interactive", action="store_true", help="Run interactively as Terminal Player"
     )
@@ -315,6 +326,27 @@ async def main():
         save_dir = "./replays/simple_heuristic"
         strategy = SimpleHeuristicsPlayer(
             account_configuration=AccountConfiguration("SH_Strategy", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            start_listening=False,
+        )
+        player = StrategyRecordingPlayer(
+            strategy_player=strategy,
+            save_dir=save_dir,
+            account_configuration=AccountConfiguration("BotPlayer", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            max_concurrent_battles=1,
+        )
+    elif args.fuzzy:
+        save_dir = "./replays/fuzzy_heuristic"
+        strategy = FuzzyHeuristic(
+            k=3,
+            account_configuration=AccountConfiguration("Fuzzy_Strategy", None),
             battle_format=fmt,
             server_configuration=LocalhostServerConfiguration,
             team=team,

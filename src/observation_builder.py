@@ -28,7 +28,10 @@ model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(dev
 model.eval()
 
 
-def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
+def _get_pokemon_text(pokemon: Pokemon | None, cond: int) -> tuple[str, str]:
+    if pokemon is None:
+        return "This slot is empty.", "No information available."
+
     # information about pokemon position
     if cond == -1:
         cond_str = "This Pokemon is DROPPED. It is not part of the battle."
@@ -47,11 +50,11 @@ def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
 
     movelist = list(pokemon.moves.keys())
     joint_movelist = ",".join(movelist)
-    id = POKEMON[joint_movelist]
+    id = POKEMON.get(joint_movelist, 0)
 
-    pokemon_desc = POKEMON_DESCRIPTION[id]
+    pokemon_desc = POKEMON_DESCRIPTION.get(id, "Unknown Pokemon description.")
 
-    moves_desc = " ".join([move + ":" + MOVES[move] for move in movelist])
+    moves_desc = " ".join([move + ":" + MOVES.get(move, "No details.") for move in movelist])
 
     item_desc = (
         "Holds no item."
@@ -87,7 +90,7 @@ def _get_pokemon_text(pokemon: Pokemon, cond: int) -> tuple[str, str]:
 
 
 def _get_pokemon_obs(
-    pokemon: Pokemon, battle: DoubleBattle, cond: int
+    pokemon: Pokemon | None, battle: DoubleBattle, cond: int, orig_idx: int
 ) -> tuple[tuple[str, str], list[float]]:
     """
     cond indicates whether we know if pokemon is active, benched, dropped, fainted or unknown
@@ -103,6 +106,9 @@ def _get_pokemon_obs(
 
     # Extra inputs for each pokemon (roughly normalized to [0,1])
     pokemon_row = [0.0] * EXTRA_SZ
+    if pokemon is None:
+        return pokemon_str, pokemon_row
+
     pokemon_row[0] = pokemon.type_1.value / 18.0
     pokemon_row[1] = 0.0 if pokemon.type_2 is None else pokemon.type_2.value / 18.0
     pokemon_row[2] = 0.0 if not pokemon.is_terastallized else pokemon.tera_type.value / 18.0  # type: ignore
@@ -130,50 +136,114 @@ def _get_pokemon_obs(
     pokemon_row[26] = curr_effects.get(Effect.YAWN, 0)
 
     pokemon_row[27] = pokemon.weight / 300.0  # heaviest pokemon is ursa bm at 330
+    pokemon_row[28] = (orig_idx + 1) / 6.0  # Original team index (1-6) or 0 if unknown/opp
 
     return pokemon_str, pokemon_row
 
 
-def _get_team_obs(
-    battle: DoubleBattle,
-) -> tuple[list[tuple[str, str]], list[float], list[tuple[str, str]], list[float]]:
-    p1_mon_txt = []
-    p1_mon_arr = []
-    possible_switches = {mon for switches in battle.available_switches for mon in switches}
+def _get_ordered_pokemon(
+    battle: DoubleBattle, is_opponent: bool
+) -> list[tuple[Pokemon | None, int]]:
+    """
+    Returns a list of 6 (Pokemon, original_index) tuples.
+    Order: Active Slot 0, Active Slot 1, Bench 0, Bench 1, Dropped 0, Dropped 1
+    """
+    if is_opponent:
+        active = battle.opponent_active_pokemon
+        team = battle.opponent_team
+    else:
+        active = battle.active_pokemon
+        team = battle.team
 
-    for mon in battle.team.values():
-        if mon.fainted:
-            cond = 3
-        elif mon in battle.active_pokemon:
-            cond = 1
-        elif mon in possible_switches:
-            cond = 2
-        else:
-            cond = 4
-        mon_txt, mon_arr = _get_pokemon_obs(mon, battle, cond)
-        p1_mon_txt.append(mon_txt)
-        p1_mon_arr.append(mon_arr)
+    # Identified slots
+    slot0 = active[0] if len(active) > 0 else None
+    slot1 = active[1] if len(active) > 1 else None
 
-    p2_mon_txt = []
-    p2_mon_arr = []
-    revealed = [mon for mon in battle.opponent_team.values() if mon.revealed]
+    assigned = set()
+    if slot0:
+        assigned.add(slot0)
+    if slot1:
+        assigned.add(slot1)
 
-    for mon in battle.opponent_team.values():
-        if mon.fainted:
-            cond = 3
-        elif mon in battle.opponent_active_pokemon:
-            cond = 1
-        elif mon.revealed:
-            cond = 2
-        elif len(revealed) == 4:
-            cond = -1
-        else:
+    def get_orig_idx(mon):
+        if mon is None or is_opponent:
+            return -1
+        for i, m in enumerate(battle.team.values()):
+            if m == mon:
+                return i
+        return -1
+
+    # Others in team
+    others = []
+    for i, mon in enumerate(team.values()):
+        if mon not in assigned:
+            others.append((mon, i if not is_opponent else -1))
+
+    bench = []
+    dropped = []
+
+    if not is_opponent:
+        possible_switches = {mon for switches in battle.available_switches for mon in switches}
+        for mon, idx in others:
+            if mon.fainted or mon in possible_switches:
+                bench.append((mon, idx))
+            else:
+                dropped.append((mon, idx))
+    else:
+        # For opponent, revealed ones that are not active are "Bench"
+        # Since opponent_team only contains revealed ones, others are all benched/fainted
+        for mon, idx in others:
+            bench.append((mon, idx))
+
+    # Pad to exact sizes
+    while len(bench) < 2:
+        bench.append((None, -1))
+    bench = bench[:2]
+
+    while len(dropped) < 2:
+        dropped.append((None, -1))
+    dropped = dropped[:2]
+
+    return [(slot0, get_orig_idx(slot0)), (slot1, get_orig_idx(slot1))] + bench + dropped
+
+
+def _get_team_obs(battle: DoubleBattle):
+    p1_mons = _get_ordered_pokemon(battle, is_opponent=False)
+    p2_mons = _get_ordered_pokemon(battle, is_opponent=True)
+
+    p1_txt, p1_arr = [], []
+    for i, (mon, idx) in enumerate(p1_mons):
+        if mon is None:
             cond = 0
-        mon_txt, mon_arr = _get_pokemon_obs(mon, battle, cond)
-        p2_mon_txt.append(mon_txt)
-        p2_mon_arr.append(mon_arr)
+        elif i < 2:
+            cond = 1
+        elif mon.fainted:
+            cond = 3
+        elif i < 4:
+            cond = 2
+        else:
+            cond = -1
+        t, a = _get_pokemon_obs(mon, battle, cond, idx)
+        p1_txt.append(t)
+        p1_arr.append(a)
 
-    return p1_mon_txt, p1_mon_arr, p2_mon_txt, p2_mon_arr
+    p2_txt, p2_arr = [], []
+    for i, (mon, idx) in enumerate(p2_mons):
+        if mon is None:
+            cond = 0
+        elif i < 2:
+            cond = 1
+        elif mon.fainted:
+            cond = 3
+        elif i < 4:
+            cond = 2
+        else:
+            cond = -1
+        t, a = _get_pokemon_obs(mon, battle, cond, idx)
+        p2_txt.append(t)
+        p2_arr.append(a)
+
+    return p1_txt, p1_arr, p2_txt, p2_arr
 
 
 def _get_locals(battle: DoubleBattle):
@@ -184,11 +254,12 @@ def _get_locals(battle: DoubleBattle):
     2 = psychic terrain turns
     3 = sun turns
     4 = rain turns
-    5 = tailwind turns
-    6 = aurora veil turns
+    5 = snow turns
+    6 = tailwind turns
+    7 = aurora veil turns
     """
-    p1_row = [0.0] * 7
-    p2_row = [0.0] * 7
+    p1_row = [0.0] * 8
+    p2_row = [0.0] * 8
 
     # Global effects
     trick_room_turns = 0
@@ -209,13 +280,17 @@ def _get_locals(battle: DoubleBattle):
 
     sun_turns = 0
     rain_turns = 0
+    snow_turns = 0
     if battle._weather:
         rain_start = battle._weather.get(Weather.RAINDANCE, -1)
         sun_start = battle._weather.get(Weather.SUNNYDAY, -1)
+        snow_start = battle._weather.get(Weather.SNOW, -1)
         if rain_start >= 0:
             rain_turns = 5 - (battle.turn - rain_start)
         elif sun_start >= 0:
             sun_turns = 5 - (battle.turn - sun_start)
+        elif snow_start >= 0:
+            snow_turns = 5 - (battle.turn - snow_start)
 
     global_effects = [
         trick_room_turns,
@@ -223,8 +298,9 @@ def _get_locals(battle: DoubleBattle):
         psychic_terrain_turns,
         sun_turns,
         rain_turns,
+        snow_turns,
     ]
-    for i in range(5):
+    for i in range(6):
         p1_row[i] = global_effects[i]
         p2_row[i] = global_effects[i]
 
@@ -238,8 +314,8 @@ def _get_locals(battle: DoubleBattle):
             tailwind_turns = 4 - (battle.turn - tailwind_start)
         if veil_start >= 0:
             veil_turns = 5 - (battle.turn - veil_start)
-    p1_row[5] = tailwind_turns
-    p1_row[6] = veil_turns
+    p1_row[6] = tailwind_turns
+    p1_row[7] = veil_turns
 
     # Player 2 local effects
     tailwind_turns = 0
@@ -251,8 +327,8 @@ def _get_locals(battle: DoubleBattle):
             tailwind_turns = 4 - (battle.turn - tailwind_start)
         if veil_start >= 0:
             veil_turns = 5 - (battle.turn - veil_start)
-    p2_row[5] = tailwind_turns
-    p2_row[6] = veil_turns
+    p2_row[6] = tailwind_turns
+    p2_row[7] = veil_turns
 
     return p1_row, p2_row
 
@@ -264,6 +340,7 @@ def _get_field_text(battle: DoubleBattle) -> str:
         "Psychic Terrain (prevents priority moves by grounded Pokémon and boosts Psychic moves by 30%), "
         "Sunny Weather (boosts Fire moves by 50%, weakens Water moves by 50%), "
         "Rainy Weather (boosts Water moves by 50%, weakens Fire moves by 50%), "
+        "Snowy Weather (boosts Defense of Ice types by 50%), "
         "Tailwind (doubles team speed), "
         "Aurora Veil (reduces damage taken by team by 33%)."
     )
@@ -276,6 +353,7 @@ def _get_field_text(battle: DoubleBattle) -> str:
         "Psychic Terrain",
         "Sunny Weather",
         "Rainy Weather",
+        "Snowy Weather",
         "Tailwind",
         "Aurora Veil",
     ]
@@ -313,7 +391,7 @@ def _get_info_text(p1_tera: Pokemon | None, p2_tera: Pokemon | None) -> str:
     return p1_str + p2_str
 
 
-@lru_cache(maxsize=200_000)
+@lru_cache(maxsize=50_000)
 def _encode_one(text: str):
     enc = tokenizer(
         text,
@@ -342,7 +420,7 @@ def from_battle(battle: AbstractBattle):
     if battle.teampreview:
         return torch.rand(OBS_DIM, dtype=torch.float32)
 
-    p1_txt, p1_arr, opp_txt, opp_arr = _get_team_obs(battle)
+    p1_txt_pairs, p1_arr, opp_txt_pairs, opp_arr = _get_team_obs(battle)
     field_txt = _get_field_text(battle)
 
     p1_tera = None
@@ -359,24 +437,30 @@ def from_battle(battle: AbstractBattle):
 
     info_txt = _get_info_text(p1_tera, opp_tera)
 
-    p1_flat = [text for pair in p1_txt for text in pair]
-    opp_flat = [text for pair in opp_txt for text in pair]
-    text_emb = encode_texts([field_txt, info_txt, *p1_flat, *opp_flat])
+    p1_field_nums, p2_field_nums = _get_locals(battle)
+    p1_tera_info = 0 if p1_tera is None else 1
+    p2_tera_info = 0 if opp_tera is None else 1
+    field_num_row_raw = torch.tensor([*p1_field_nums, p1_tera_info, *p2_field_nums, p2_tera_info])
+    field_num_row = torch.cat(
+        [field_num_row_raw, torch.zeros(TINYBERT_SZ - len(field_num_row_raw))]
+    )
 
-    num_emb = torch.tensor(p1_arr + opp_arr)
-    num_emb = torch.cat([num_emb, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)
+    p1_flat = [text for pair in p1_txt_pairs for text in pair]  # 12
+    opp_flat = [text for pair in opp_txt_pairs for text in pair]  # 12
 
-    return torch.cat([text_emb, num_emb], dim=0)
+    text_emb = encode_texts(
+        [field_txt, info_txt, *p1_flat, *opp_flat]
+    )  # 1 + 1 + 12 + 12 = 26 tokens
+
+    num_rows = torch.tensor(p1_arr + opp_arr)  # 6 + 6 = 12 rows
+    num_emb = torch.cat([num_rows, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)  # 12 rows
+
+    return torch.cat([text_emb, num_emb, field_num_row.unsqueeze(0)], dim=0)
 
 
 def get_action_mask(battle: AbstractBattle):
-    """
-    Returns a [2, ACT_SIZE] action mask for both active Pokémon.
-    Each row is a mask for the legal actions of that Pokémon.
-    """
     assert isinstance(battle, DoubleBattle)
 
-    # direct copy of vgc-bench action mask
     def single_action_mask(battle: DoubleBattle, pos: int) -> list[int]:
         switch_space = [
             i + 1
@@ -410,8 +494,6 @@ def get_action_mask(battle: AbstractBattle):
         action_mask = [int(i in actions) for i in range(ACT_SIZE)]
         return action_mask
 
-    # Stack for both active Pokémon (positions 0 and 1)
     mask0 = single_action_mask(battle, 0)
     mask1 = single_action_mask(battle, 1)
-    # Return as a torch tensor of shape (2, ACT_SIZE)
     return torch.tensor([mask0, mask1], dtype=torch.uint8)

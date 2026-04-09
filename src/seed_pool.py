@@ -62,50 +62,76 @@ def main():
     else:
         print("seed_simple_heuristic already exists.")
 
-    # 3 & 4. Interactive 70 / 30
-    needs_70 = "seed_interactive_70" not in pool.opponent_ids
-    needs_30 = "seed_interactive_30" not in pool.opponent_ids
-
-    if needs_70 or needs_30:
-        ds_inter = _get_dataset(replays_base, "interactive")
-        if ds_inter is not None and len(ds_inter) > 0:
-            total_size = len(ds_inter)
-            size_70 = int(0.7 * total_size)
-            size_30 = total_size - size_70
-
-            ds_70, ds_30 = torch.utils.data.random_split(ds_inter, [size_70, size_30])
-
-            if needs_70:
-                print(f"--- Training seed_interactive_70 ({size_70} samples) ---")
-                policy_70 = train_behavior_cloning(ds_70, **bc_kwargs)
-                if policy_70:
-                    pool.add(policy_70, "seed_interactive_70")
-                    added_seeds.append("seed_interactive_70")
-            else:
-                print("seed_interactive_70 already exists.")
-
-            if needs_30:
-                print(f"--- Training seed_interactive_30 ({size_30} samples) ---")
-                policy_30 = train_behavior_cloning(ds_30, **bc_kwargs)
-                if policy_30:
-                    pool.add(policy_30, "seed_interactive_30")
-                    added_seeds.append("seed_interactive_30")
-            else:
-                print("seed_interactive_30 already exists.")
-    else:
-        print("\nseed_interactive_70 and seed_interactive_30 already exist.")
-
-    # 5. All Replays
-    if "seed_all_replays" not in pool.opponent_ids:
-        print("--- Training seed_all_replays (All combined) ---")
-        ds_all = _get_dataset(replays_base, "")
-        if ds_all:
-            policy = train_behavior_cloning(ds_all, **bc_kwargs)
+    # 3. Fuzzy Heuristic
+    if "seed_fuzzy_heuristic" not in pool.opponent_ids:
+        print("--- Training seed_fuzzy_heuristic ---")
+        ds_fuzzy = _get_dataset(replays_base, "fuzzy_heuristic")
+        if ds_fuzzy:
+            policy = train_behavior_cloning(ds_fuzzy, **bc_kwargs)
             if policy:
-                pool.add(policy, "seed_all_replays")
-                added_seeds.append("seed_all_replays")
+                pool.add(policy, "seed_fuzzy_heuristic")
+                added_seeds.append("seed_fuzzy_heuristic")
     else:
-        print("seed_all_replays already exists.")
+        print("seed_fuzzy_heuristic already exists.")
+
+    # 4. Interactive
+    if "seed_interactive" not in pool.opponent_ids:
+        print("--- Training seed_interactive ---")
+        ds_inter = _get_dataset(replays_base, "interactive")
+        if ds_inter:
+            policy = train_behavior_cloning(ds_inter, **bc_kwargs)
+            if policy:
+                pool.add(policy, "seed_interactive")
+                added_seeds.append("seed_interactive")
+    else:
+        print("seed_interactive already exists.")
+
+    # 5. Mixed
+    if "seed_mixed" not in pool.opponent_ids:
+        print("--- Training seed_mixed ---")
+        ds_mbp = _get_dataset(replays_base, "max_base_power")
+        ds_sh = _get_dataset(replays_base, "simple_heuristic")
+        ds_fuzzy = _get_dataset(replays_base, "fuzzy_heuristic")
+        ds_inter = _get_dataset(replays_base, "interactive")
+
+        if ds_mbp and ds_sh and ds_fuzzy and ds_inter:
+            # We want to create a mixed dataset with 25/25/50 split
+            # n_fuzzy = 2 * n_mbp = 2 * n_sh
+            n_mbp_avail = len(ds_mbp)
+            n_sh_avail = len(ds_sh)
+            n_fuzzy_avail = len(ds_fuzzy)
+
+            # Maximize the number of samples we can use
+            n = min(n_mbp_avail, n_sh_avail, n_fuzzy_avail // 2)
+
+            if n > 0:
+                sub_mbp, _ = torch.utils.data.random_split(ds_mbp, [n, n_mbp_avail - n])
+                sub_sh, _ = torch.utils.data.random_split(ds_sh, [n, n_sh_avail - n])
+                sub_fuzzy, _ = torch.utils.data.random_split(
+                    ds_fuzzy, [2 * n, n_fuzzy_avail - 2 * n]
+                )
+
+                ds_mixed_init = torch.utils.data.ConcatDataset([sub_mbp, sub_sh, sub_fuzzy])
+                policy = train_behavior_cloning(ds_mixed_init, **bc_kwargs)
+                if policy is None:
+                    print("Error: Mixed dataset could not be created.")
+                    return
+
+                # retrain on interactive
+                new_kwargs = bc_kwargs
+                new_kwargs["learning_rate"] /= 2.0
+                policy = train_behavior_cloning(ds_inter, policy=policy, **new_kwargs)
+                if policy is None:
+                    print("Error: Interactive dataset missing.")
+                    return
+
+                pool.add(policy, "seed_mixed")
+                added_seeds.append("seed_mixed")
+
+            else:
+                print("Not enough samples to create mixed dataset.")
+    else:
+        print("seed_mixed already exists.")
 
     if added_seeds:
         pool.save_state()

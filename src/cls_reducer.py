@@ -6,7 +6,17 @@ from lookups import OBS_DIM
 
 
 class CLSReducer(nn.Module):
-    CLS, FIELD, ALLY, FOE = 0, 1, 2, 3
+    CLS = 0
+    FIELD = 1
+    TEAM_SLOT_0 = 2
+    TEAM_SLOT_1 = 3
+    TEAM_BENCH = 4
+    TEAM_DROPPED = 5
+    OPP_SLOT_0 = 6
+    OPP_SLOT_1 = 7
+    OPP_BENCH = 8
+    OPP_DROPPED = 9
+    UNKNOWN = 10
     TEXT_A, TEXT_B, NUM = 0, 1, 2
 
     def __init__(
@@ -22,7 +32,7 @@ class CLSReducer(nn.Module):
         super().__init__()
         if seq_len != OBS_DIM[0]:
             raise ValueError(
-                f"This CLSReducer assumes seq_len={OBS_DIM[0]} (field + extra info + 12*(textA,textB,num))."
+                f"This CLSReducer assumes seq_len={OBS_DIM[0]} (field + info + 12*text + 12*num)."
             )
 
         self.seq_len = seq_len
@@ -34,7 +44,7 @@ class CLSReducer(nn.Module):
         self.cls_base = nn.Parameter(torch.rand(1, 1, d_model) * self.d_model**-0.5)
         self.cls_conditioner = nn.Linear(d_model, d_model)
 
-        self.type_emb = nn.Embedding(4, d_model)
+        self.type_emb = nn.Embedding(11, d_model)
         self.part_emb = nn.Embedding(3, d_model)
 
         enc_layer = nn.TransformerEncoderLayer(
@@ -52,34 +62,60 @@ class CLSReducer(nn.Module):
             enable_nested_tensor=False,  # annoying warning
         )
 
-        type_ids, part_ids = self._build_ids()
-        self.register_buffer("type_ids", type_ids, persistent=False)
-        self.register_buffer("part_ids", part_ids, persistent=False)
+        # part_ids does not apply to cls and field text
+        # Transformer indices (after cat cls at dim 0):
+        # 0: CLS
+        # 1: Field Text
+        # 2: Info Text
+        # 3-14: P1 Text (12)
+        # 15-26: Opp Text (12)
+        # 27-32: P1 Num (6)
+        # 33-38: Opp Num (6)
+        # 39: Field Num (1)
 
-        self._init_weights()
-
-    def _build_ids(self):
-        type_ids = torch.empty(self.seq_len + 1, dtype=torch.long)
-        type_ids[0] = self.CLS
-        type_ids[1] = type_ids[2] = self.FIELD
-        # Ally pokemon text (6 pokemon * 2 parts)
-        type_ids[3:15] = self.ALLY
-        # Foe pokemon text (6 pokemon * 2 parts)
-        type_ids[15:27] = self.FOE
-        # Ally pokemon numerical (6 pokemon * 1 part)
-        type_ids[27:33] = self.ALLY
-        # Foe pokemon numerical (6 pokemon * 1 part)
-        type_ids[33:39] = self.FOE
-
-        # first 3 tokens do not have a part embedding (they are all of one part each)
         part_ids = torch.cat(
             [
-                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),
-                torch.tensor([self.NUM], dtype=torch.long).repeat(12),
+                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(
+                    12
+                ),  # P1 then Opp text
+                torch.tensor([self.NUM], dtype=torch.long).repeat(13),  # P1+Opp+Field Nums
             ]
         )
+        self.register_buffer("part_ids", part_ids, persistent=False)
 
-        return type_ids, part_ids
+        type_ids = torch.zeros(40, dtype=torch.long)
+        type_ids[0] = self.CLS
+        type_ids[1:3] = self.FIELD
+
+        # P1 Texts (3-14)
+        type_ids[3:5] = self.TEAM_SLOT_0
+        type_ids[5:7] = self.TEAM_SLOT_1
+        type_ids[7:11] = self.TEAM_BENCH
+        type_ids[11:15] = self.TEAM_DROPPED
+
+        # Opp Texts (15-26)
+        type_ids[15:17] = self.OPP_SLOT_0
+        type_ids[17:19] = self.OPP_SLOT_1
+        type_ids[19:23] = self.OPP_BENCH
+        type_ids[23:27] = self.OPP_DROPPED
+
+        # P1 Nums (27-32)
+        type_ids[27] = self.TEAM_SLOT_0
+        type_ids[28] = self.TEAM_SLOT_1
+        type_ids[29:31] = self.TEAM_BENCH
+        type_ids[31:33] = self.TEAM_DROPPED
+
+        # Opp Nums (33-38)
+        type_ids[33] = self.OPP_SLOT_0
+        type_ids[34] = self.OPP_SLOT_1
+        type_ids[35:37] = self.OPP_BENCH
+        type_ids[37:39] = self.OPP_DROPPED
+
+        # Field Nums (39)
+        type_ids[39] = self.FIELD
+        self.register_buffer("type_ids", type_ids, persistent=False)
+
+        self._init_weights()
 
     @torch.no_grad()
     def _init_weights(self):
@@ -111,10 +147,11 @@ class CLSReducer(nn.Module):
 
         global_ctx = x.mean(dim=1, keepdim=True)
         cls = self.cls_base.expand(B, -1, -1) + self.cls_conditioner(global_ctx)
-        x = torch.cat([cls, x], dim=1)
+        x = torch.cat([cls, x], dim=1)  # (B, 40, D)
 
         type_e = self.type_emb(self.type_ids).unsqueeze(0).expand(B, -1, -1)
         part_e = self.part_emb(self.part_ids).unsqueeze(0).expand(B, -1, -1)
+
         x += type_e
         x[:, 3:, :] += part_e
 
