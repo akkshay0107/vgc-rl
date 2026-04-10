@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 
 import torch
@@ -415,6 +416,66 @@ def encode_texts(texts: list[str]):
     return torch.stack([_encode_one(t) for t in texts], dim=0)
 
 
+def _get_turn_summary(battle: DoubleBattle, turn: int) -> str:
+    if turn <= 0:
+        return f"Turn {turn}: Battle has not started yet."
+
+    # In recent versions of poke-env, the battle log is accessible via battle._observations
+    # which is a dict[int, Observation] (previously dict[int, list[str]])
+    obs = getattr(battle, "_observations", {}).get(turn, [])
+
+    if not obs:
+        return f"Turn {turn}: No information available."
+
+    if not isinstance(obs, list):
+        # In recent poke-env, obs is an Observation object
+        # its events property is List[List[str]] (split messages)
+        messages = ["|".join(e) for e in getattr(obs, "events", [])]
+    else:
+        # Compatibility with older poke-env where _observations was dict[int, list[str]]
+        messages = obs
+
+    summary_parts = []
+    # Regex for common showdown messages
+    for msg in messages:
+        if re.search(r"^\|move\|", msg):
+            match = re.search(r"\|move\|([^|]+)\|([^|]+)", msg)
+            if match:
+                pkm, move = match.groups()
+                summary_parts.append(f"{pkm} used {move}")
+        elif re.search(r"^\|-damage\|", msg):
+            match = re.search(r"\|-damage\|([^|]+)\|([^|]+)", msg)
+            if match:
+                pkm, health = match.groups()
+                summary_parts.append(f"{pkm} took damage ({health})")
+        elif re.search(r"^\|faint\|", msg):
+            match = re.search(r"\|faint\|([^|]+)", msg)
+            if match:
+                summary_parts.append(f"{match.group(1)} fainted")
+        elif re.search(r"^\|-status\|", msg):
+            match = re.search(r"\|-status\|([^|]+)\|([^|]+)", msg)
+            if match:
+                summary_parts.append(f"{match.group(1)} was {match.group(2)}ed")
+        elif re.search(r"^\|-(boost|unboost)\|", msg):
+            match = re.search(r"\|-(boost|unboost)\|([^|]+)\|([^|]+)\|([^|]+)", msg)
+            if match:
+                verb, pkm, stat, amount = match.groups()
+                summary_parts.append(f"{pkm}'s {stat} {verb}ed by {amount}")
+        elif re.search(r"^\|-ability\|", msg):
+            match = re.search(r"\|-ability\|([^|]+)\|([^|]+)", msg)
+            if match:
+                summary_parts.append(f"{match.group(1)}'s {match.group(2)} activated")
+        elif re.search(r"^\|-terastallize\|", msg):
+            match = re.search(r"\|-terastallize\|([^|]+)\|([^|]+)", msg)
+            if match:
+                summary_parts.append(f"{match.group(1)} terastallized to {match.group(2)}")
+
+    if not summary_parts:
+        return f"Turn {turn}: Ongoing actions."
+
+    return f"Turn {turn}: " + "; ".join(summary_parts[:10]) + "."
+
+
 def from_battle(battle: AbstractBattle):
     assert isinstance(battle, DoubleBattle)
     if battle.teampreview:
@@ -437,6 +498,10 @@ def from_battle(battle: AbstractBattle):
 
     info_txt = _get_info_text(p1_tera, opp_tera)
 
+    h1_txt = _get_turn_summary(battle, battle.turn - 1)
+    h2_txt = _get_turn_summary(battle, battle.turn - 2)
+    h3_txt = _get_turn_summary(battle, battle.turn - 3)
+
     p1_field_nums, p2_field_nums = _get_locals(battle)
     p1_tera_info = 0 if p1_tera is None else 1
     p2_tera_info = 0 if opp_tera is None else 1
@@ -449,8 +514,8 @@ def from_battle(battle: AbstractBattle):
     opp_flat = [text for pair in opp_txt_pairs for text in pair]  # 12
 
     text_emb = encode_texts(
-        [field_txt, info_txt, *p1_flat, *opp_flat]
-    )  # 1 + 1 + 12 + 12 = 26 tokens
+        [field_txt, info_txt, h1_txt, h2_txt, h3_txt, *p1_flat, *opp_flat]
+    )  # 1 + 1 + 3 + 12 + 12 = 29 tokens
 
     num_rows = torch.tensor(p1_arr + opp_arr)  # 6 + 6 = 12 rows
     num_emb = torch.cat([num_rows, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)  # 12 rows

@@ -29,7 +29,9 @@ if __name__ == "__main__":
 
     pokemon_str = observation_builder._get_pokemon_text(pokemon, cond=2)
     print(len(pokemon_str[0]), len(pokemon_str[1]))
-    tokens = tuple(observation_builder.tokenizer.encode(s, add_special_tokens=True) for s in pokemon_str)
+    tokens = tuple(
+        observation_builder.tokenizer.encode(s, add_special_tokens=True) for s in pokemon_str
+    )
     print(len(tokens[0]), len(tokens[1]))
     print("-" * 100)
     print(pokemon_str)

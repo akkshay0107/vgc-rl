@@ -52,6 +52,8 @@ class RolloutBuffer:
         self.rewards = []
         self.dones = []
         self.action_masks = []
+        self.states_hg = []
+        self.states_cls = []
 
     def add(self, data: dict):
         # make sure all the data on the cpu beforehand
@@ -63,6 +65,8 @@ class RolloutBuffer:
         self.rewards.append(data["rewards"])
         self.dones.append(data["dones"])
         self.action_masks.append(data["action_masks"])
+        self.states_hg.append(data["state"][0])
+        self.states_cls.append(data["state"][1])
 
     def get_batches(self, device: torch.device, config: PPOConfig):
         rewards = torch.stack(self.rewards).to(device)
@@ -90,6 +94,12 @@ class RolloutBuffer:
         flat_action_masks = (
             torch.stack(self.action_masks).reshape(T * B, 2, ACT_SIZE).to(device, non_blocking=True)
         )
+        flat_states_hg = (
+            torch.stack(self.states_hg).reshape(T * B, -1).to(device, non_blocking=True)
+        )
+        flat_states_cls = (
+            torch.stack(self.states_cls).reshape(T * B, -1).to(device, non_blocking=True)
+        )
 
         return {
             "obs": flat_obs,
@@ -98,6 +108,7 @@ class RolloutBuffer:
             "advantages": advantages.reshape(-1),
             "returns": returns.reshape(-1),
             "action_masks": flat_action_masks,
+            "states": (flat_states_hg, flat_states_cls),
         }
 
 

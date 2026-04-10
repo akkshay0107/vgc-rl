@@ -56,9 +56,16 @@ class PolicyNet(nn.Module):
     def forward(
         self,
         obs: torch.Tensor,
+        state: tuple[torch.Tensor, torch.Tensor] | None = None,
         action_mask: torch.Tensor | None = None,
         sample_actions: bool = True,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor]:
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor,
+        tuple[torch.Tensor, torch.Tensor],
+    ]:
         # Add batch dimension if missing
         if obs.dim() == 2:
             obs = obs.unsqueeze(0)
@@ -68,7 +75,7 @@ class PolicyNet(nn.Module):
         if S != self.seq_len or F != self.feat_dim:
             raise ValueError(f"Got shape ({S}, {F}). Expected({self.seq_len}, {self.feat_dim})")
 
-        z = self.reducer(obs)
+        z, next_state = self.reducer(obs, state)
         x = self.shared_backbone(z)
 
         policy_logits = self.policy_head(x).reshape(B, 2, self.act_size)
@@ -76,7 +83,7 @@ class PolicyNet(nn.Module):
 
         # Return raw logits if no masking or sampling needed
         if not sample_actions or action_mask is None:
-            return policy_logits, None, None, value
+            return policy_logits, None, None, value, next_state
 
         # Mask logits with -inf where actions are illegal
         logits = self._apply_masks(policy_logits, action_mask)
@@ -96,14 +103,19 @@ class PolicyNet(nn.Module):
             log_prob1 + log_prob2,  # log prob of choosing this action pair
             torch.stack([action1, action2], -1),
             value,
+            next_state,
         )
 
     def get_policy_masked_logits(
-        self, obs: torch.Tensor, action_taken: torch.Tensor, action_mask: torch.Tensor | None
+        self,
+        obs: torch.Tensor,
+        action_taken: torch.Tensor,
+        action_mask: torch.Tensor | None,
+        state: tuple[torch.Tensor, torch.Tensor] | None = None,
     ):
         # returns policy probs in log space assuming the given action
         # returns log probs for the joint distribution
-        policy_logits, _, _, _ = self(obs, action_mask, sample_actions=False)
+        policy_logits, _, _, _, _ = self(obs, state, action_mask, sample_actions=False)
 
         if action_mask is None:
             return policy_logits
@@ -113,9 +125,13 @@ class PolicyNet(nn.Module):
         return logits
 
     def evaluate_actions(
-        self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor | None = None
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        action_mask: torch.Tensor | None = None,
+        state: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        policy_logits, _, _, value = self(obs, action_mask, sample_actions=False)
+        policy_logits, _, _, value, _ = self(obs, state, action_mask, sample_actions=False)
 
         if action_mask is not None:
             logits = self._apply_masks(policy_logits, action_mask)

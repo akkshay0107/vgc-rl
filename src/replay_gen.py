@@ -373,10 +373,7 @@ async def main():
         await player.battle_against(selected_opp, n_battles=1)
         await selected_opp.ps_client.stop_listening()
 
-        if args.interactive:
-            player._save_episode_data()
-        elif i % 100 == 0:
-            player._save_episode_data()
+        player._save_episode_data()
 
     # Cleanup and save session (handles any remaining battles for mbp/sh)
     player._save_episode_data()

@@ -1,7 +1,8 @@
+import random
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
 from policy import PolicyNet
 
@@ -10,30 +11,29 @@ from policy import PolicyNet
 # TODO: replace with lazy loading once we have larger replay datasets
 class ReplayDataset(Dataset):
     def __init__(self, replays_dir: str):
-        self.samples = []
+        self.episodes = []
         path = Path(replays_dir)
 
-        # Load and flatten immediately
+        # Load episodes
         for replay_file in sorted(path.rglob("*.replay")):
             try:
                 episode_data = torch.load(replay_file, weights_only=False)
-                # episode_data is a list of dicts (check terminal_player)
-                self.samples.extend(episode_data)
+                self.episodes.append(episode_data)
             except Exception as e:
                 print(f"Could not load file {replay_file}: {e}")
 
-        print(f"Loaded {len(self.samples)} samples from {path}")
+        print(f"Loaded {len(self.episodes)} episodes from {path}")
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.episodes)
 
     def __getitem__(self, idx):
-        return self.samples[idx]
+        return self.episodes[idx]
 
 
 def train_behavior_cloning(
     dataset,
-    batch_size: int = 64,
+    batch_size: int = 1,  # Process one episode at a time for simplicity
     num_epochs: int = 10,
     learning_rate: float = 3e-4,
     val_split_ratio: float = 0.2,
@@ -45,10 +45,11 @@ def train_behavior_cloning(
 
     val_size = int(val_split_ratio * len(dataset))
     train_size = len(dataset) - val_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    train_indices = torch.randperm(len(dataset))[:train_size]
+    val_indices = torch.randperm(len(dataset))[train_size:]
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    train_subset = [dataset[i] for i in train_indices]
+    val_subset = [dataset[i] for i in val_indices]
 
     if policy is None:
         policy = PolicyNet()
@@ -63,32 +64,45 @@ def train_behavior_cloning(
         train_correct = 0
         train_total = 0
 
-        for batch in train_loader:
-            obs = batch["obs"].to(device)
-            mask = batch["mask"].to(device)
-            target = batch["action"].to(device)
-
+        random.shuffle(train_subset)
+        for episode in train_subset:
+            state = None
             optimizer.zero_grad()
+            episode_loss = 0.0
 
-            log_prob, _, _ = policy.evaluate_actions(obs, target, mask)
-            loss = -log_prob.mean()
-            loss.backward()
-            optimizer.step()
+            for sample in episode:
+                obs = sample["obs"].to(device).unsqueeze(0)
+                mask = sample["mask"].to(device).unsqueeze(0)
+                target = torch.from_numpy(sample["action"]).to(device).unsqueeze(0)
 
-            train_loss += loss.item()
+                log_prob, entropy, value = policy.evaluate_actions(obs, target, mask, state=state)
+                # We need to compute next_state separately
+                _, _, _, _, next_state = policy(obs, state, mask, sample_actions=False)
 
-            with torch.no_grad():
-                logits = policy.get_policy_masked_logits(obs, target, mask)
-                _, preds = torch.max(logits, dim=2)
-                train_total += target.shape[0] * 2  # two pokemon actions
-                train_correct += (preds == target).sum().item()
+                loss = -log_prob.mean()
+                episode_loss += loss
+
+                with torch.no_grad():
+                    logits = policy.get_policy_masked_logits(obs, target, mask, state=state)
+                    _, preds = torch.max(logits, dim=2)
+                    train_total += target.shape[0] * 2
+                    train_correct += (preds == target).sum().item()
+
+                state = (
+                    next_state[0].detach(),
+                    next_state[1].detach(),
+                )  # TBPTT if we don't detach
+
+            if len(episode) > 0:
+                episode_loss /= len(episode)
+                episode_loss.backward()
+                optimizer.step()
+                train_loss += episode_loss.item()
 
         if train_total > 0:
             print(
-                f"Training accuracy: {train_correct / train_total:.4f} | Loss: {train_loss / len(train_loader):.4f}"
+                f"Training accuracy: {train_correct / train_total:.4f} | Loss: {train_loss / len(train_subset):.4f}"
             )
-        else:
-            print("Training set is empty.")
 
         policy.eval()
         val_loss = 0.0
@@ -96,26 +110,32 @@ def train_behavior_cloning(
         val_total = 0
 
         with torch.no_grad():
-            for batch in val_loader:
-                obs = batch["obs"].to(device)
-                mask = batch["mask"].to(device)
-                target = batch["action"].to(device)
+            for episode in val_subset:
+                state = None
+                episode_loss = 0.0
+                for sample in episode:
+                    obs = sample["obs"].to(device).unsqueeze(0)
+                    mask = sample["mask"].to(device).unsqueeze(0)
+                    target = torch.from_numpy(sample["action"]).to(device).unsqueeze(0)
 
-                log_prob, _, _ = policy.evaluate_actions(obs, target, mask)
-                loss = -log_prob.mean()
-                val_loss += loss.item()
+                    log_prob, entropy, value = policy.evaluate_actions(
+                        obs, target, mask, state=state
+                    )
+                    _, _, _, _, state = policy(obs, state, mask, sample_actions=False)
 
-                logits = policy.get_policy_masked_logits(obs, target, mask)
-                _, preds = torch.max(logits, dim=2)
-                val_total += target.shape[0] * 2  # two pokemon actions
-                val_correct += (preds == target).sum().item()
+                    episode_loss += -log_prob.mean().item()
+                    logits = policy.get_policy_masked_logits(obs, target, mask, state=state)
+                    _, preds = torch.max(logits, dim=2)
+                    val_total += target.shape[0] * 2
+                    val_correct += (preds == target).sum().item()
+
+                if len(episode) > 0:
+                    val_loss += episode_loss / len(episode)
 
         if val_total > 0:
             print(
-                f"Validation accuracy: {val_correct / val_total:.4f} | Loss: {val_loss / len(val_loader):.4f}"
+                f"Validation accuracy: {val_correct / val_total:.4f} | Loss: {val_loss / len(val_subset):.4f}"
             )
-        else:
-            print("Validation set is empty.")
         print("")
 
     return policy

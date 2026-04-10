@@ -65,6 +65,9 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet, is_self_play: bool 
     local_transitions = []
     agent1_won = False
 
+    state1 = None
+    state2 = None
+
     while True:
         obs_agent1 = obs[env.agent1.username]
         obs_agent2 = obs[env.agent2.username]
@@ -77,19 +80,32 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet, is_self_play: bool 
 
         with torch.no_grad():
             if is_self_play:
-                # Batch both agents together for efficiency
+                # To cat states, we need them to be non-None
+                if state1 is None:
+                    # Policy handles None by creating zeros in reducer.
+                    _, _, _, _, state1 = policy(obs_batch1)
+                    _, _, _, _, state2 = policy(obs_batch2)
+
                 combined_obs = torch.cat([obs_batch1, obs_batch2], dim=0)
                 combined_masks = torch.cat([mask1, mask2], dim=0)
-                _, combined_log_probs, combined_actions, combined_values = policy(
-                    combined_obs, combined_masks
+                combined_state = (
+                    torch.cat([state1[0], state2[0]], dim=0),
+                    torch.cat([state1[1], state2[1]], dim=0),
                 )
+                _, combined_log_probs, combined_actions, combined_values, next_combined_state = (
+                    policy(combined_obs, combined_state, combined_masks)
+                )
+
                 log_probs1, log_probs2 = combined_log_probs[0:1], combined_log_probs[1:2]
                 action1, action2 = combined_actions[0:1], combined_actions[1:2]
                 values1, values2 = combined_values[0:1], combined_values[1:2]
+
+                next_state1 = (next_combined_state[0][0:1], next_combined_state[1][0:1])
+                next_state2 = (next_combined_state[0][1:2], next_combined_state[1][1:2])
             else:
-                _, log_probs1, action1, values1 = policy(obs_batch1, mask1)
-                _, _, action2, _ = opponent_policy(
-                    obs_agent2.unsqueeze(0).to(opponent_policy.device), mask2
+                _, log_probs1, action1, values1, next_state1 = policy(obs_batch1, state1, mask1)
+                _, _, action2, _, next_state2 = opponent_policy(
+                    obs_agent2.unsqueeze(0).to(opponent_policy.device), state2, mask2
                 )
 
         action1_np = action1[0].cpu().numpy()
@@ -105,6 +121,17 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet, is_self_play: bool 
         done2 = terminated[env.agent2.username] or truncated[env.agent2.username]
 
         reward1 = rewards[env.agent1.username]
+        # Store state that was used to produce this action
+        if state1 is None:
+            B = obs_batch1.shape[0]
+            d_model = policy.reducer.d_model
+            state1_to_store = (
+                torch.zeros(B, d_model, device="cpu"),
+                torch.zeros(B, d_model, device="cpu"),
+            )
+        else:
+            state1_to_store = (state1[0].cpu(), state1[1].cpu())
+
         local_transitions.append(
             {
                 "obs": obs_batch1.cpu(),
@@ -114,11 +141,22 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet, is_self_play: bool 
                 "rewards": torch.tensor([reward1], dtype=torch.float32),
                 "dones": torch.tensor([done1], dtype=torch.float32),
                 "action_masks": mask1.cpu(),
+                "state": state1_to_store,
             }
         )
 
         if is_self_play:
             reward2 = rewards[env.agent2.username]
+            if state2 is None:
+                B = obs_batch2.shape[0]
+                d_model = policy.reducer.d_model
+                state2_to_store = (
+                    torch.zeros(B, d_model, device="cpu"),
+                    torch.zeros(B, d_model, device="cpu"),
+                )
+            else:
+                state2_to_store = (state2[0].cpu(), state2[1].cpu())
+
             local_transitions.append(
                 {
                     "obs": obs_batch2.cpu(),
@@ -128,6 +166,7 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet, is_self_play: bool 
                     "rewards": torch.tensor([reward2], dtype=torch.float32),
                     "dones": torch.tensor([done2], dtype=torch.float32),
                     "action_masks": mask2.cpu(),
+                    "state": state2_to_store,
                 }
             )
 
@@ -136,6 +175,8 @@ def collect_rollout(env, buffer, opponent_policy: PolicyNet, is_self_play: bool 
             break
 
         obs = next_obs
+        state1 = next_state1
+        state2 = next_state2
 
     with _buffer_lock:
         for t in local_transitions:
@@ -204,6 +245,7 @@ def ppo_update(rollout_data):
     advantages = rollout_data["advantages"]
     returns = rollout_data["returns"]
     action_masks = rollout_data["action_masks"]
+    states = rollout_data["states"]
 
     n_samples = len(observations)
 
@@ -233,9 +275,10 @@ def ppo_update(rollout_data):
             mb_advantages = advantages[mb_idx].to(policy.device)
             mb_returns = returns[mb_idx].to(policy.device)
             mb_action_masks = action_masks[mb_idx].to(policy.device)
+            mb_states = (states[0][mb_idx].to(policy.device), states[1][mb_idx].to(policy.device))
 
             new_log_probs, entropy, new_values = policy.evaluate_actions(
-                mb_observations, mb_actions, mb_action_masks
+                mb_observations, mb_actions, mb_action_masks, state=mb_states
             )
 
             log_ratio = new_log_probs - mb_old_log_probs
