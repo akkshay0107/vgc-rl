@@ -1,12 +1,13 @@
-import torch
 import sys
 from pathlib import Path
+
+import torch
 
 # Add src to path
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent / "src"))
 
+from lookups import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
-from lookups import OBS_DIM, ACT_SIZE
 
 
 def test_full_gradient_flow():
@@ -42,21 +43,28 @@ def test_full_gradient_flow():
     in_proj_grad = policy.reducer.in_proj.weight.grad
     print(f"In-Proj Grad Sum: {in_proj_grad.abs().sum().item():.6e}")
 
-    # Check history_gru grad
-    gru_grad = policy.reducer.history_gru.weight_ih.grad
-    if gru_grad is not None and gru_grad.abs().sum() > 0:
-        print(f"SUCCESS: Gradient reached GRU. Sum: {gru_grad.abs().sum().item():.6e}")
+    # Check history_transformer grad
+    # TransformerEncoderLayer has multiple parameters, we'll check self_attn.in_proj_weight
+    trans_grad = policy.reducer.history_transformer.self_attn.in_proj_weight.grad
+    if trans_grad is not None and trans_grad.abs().sum() > 0:
+        print(
+            f"SUCCESS: Gradient reached History Transformer. Sum: {trans_grad.abs().sum().item():.6e}"
+        )
     else:
-        print("FAILURE: No gradient reached GRU.")
+        print("FAILURE: No gradient reached History Transformer.")
         # Check if next_state[0] (which is hg_curr) has grad if we backward from it
         policy.zero_grad()
         _, _, _, _, next_state = policy(obs)
         next_state[0].sum().backward()
-        gru_grad_direct = policy.reducer.history_gru.weight_ih.grad
-        if gru_grad_direct is not None and gru_grad_direct.abs().sum() > 0:
-            print(f"INFO: GRU parameters DO get gradients when backwarding from next_state[0]. Sum: {gru_grad_direct.abs().sum().item():.6e}")
+        trans_grad_direct = policy.reducer.history_transformer.self_attn.in_proj_weight.grad
+        if trans_grad_direct is not None and trans_grad_direct.abs().sum() > 0:
+            print(
+                f"INFO: History Transformer parameters DO get gradients when backwarding from next_state[0]. Sum: {trans_grad_direct.abs().sum().item():.6e}"
+            )
         else:
-            print("ERROR: GRU parameters STILL have no gradients when backwarding from next_state[0] directly!")
+            print(
+                "ERROR: History Transformer parameters STILL have no gradients when backwarding from next_state[0] directly!"
+            )
 
 
 if __name__ == "__main__":

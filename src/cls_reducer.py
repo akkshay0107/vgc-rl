@@ -6,6 +6,7 @@ from lookups import OBS_DIM
 
 
 class CLSReducer(nn.Module):
+    # type emb indexes
     CLS = 0
     FIELD = 1
     TEAM_SLOT_0 = 2
@@ -21,6 +22,7 @@ class CLSReducer(nn.Module):
     H3 = 12
     HG = 13
     UNKNOWN = 14
+    # part emb indexes
     TEXT_A, TEXT_B, NUM = 0, 1, 2
 
     def __init__(
@@ -32,6 +34,7 @@ class CLSReducer(nn.Module):
         nlayer: int = 2,
         dim_feedforward: int = 3072,
         dropout: float = 0.1,
+        n_hg: int = 4,
     ):
         super().__init__()
         if seq_len != OBS_DIM[0]:
@@ -40,6 +43,7 @@ class CLSReducer(nn.Module):
         self.seq_len = seq_len
         self.feat_dim = feat_dim
         self.d_model = d_model
+        self.n_hg = n_hg
 
         self.in_proj = nn.Linear(feat_dim, d_model)
 
@@ -49,8 +53,17 @@ class CLSReducer(nn.Module):
         self.type_emb = nn.Embedding(15, d_model)
         self.part_emb = nn.Embedding(3, d_model)
 
-        # GRU for history update: HG_curr = GRU([CLS_prev, H1_curr], HG_prev)
-        self.history_gru = nn.GRUCell(d_model * 2, d_model)
+        # Transformer for history update: HG_curr = Transformer([HG_prev, H1_curr, CLS_prev])
+        self.register_buffer("hg_init", torch.zeros(1, n_hg, d_model))
+        self.history_transformer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+            activation="gelu",
+        )
 
         enc_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -68,64 +81,62 @@ class CLSReducer(nn.Module):
         )
 
         # 0: CLS
-        # 1: Field Text
-        # 2: Info Text
-        # 3: H1 Text
-        # 4: H2 Text
-        # 5: H3 Text
-        # 6-17: P1 Text (12)
-        # 18-29: Opp Text (12)
-        # 30-35: P1 Num (6)
-        # 36-41: Opp Num (6)
-        # 42: Field Num (1)
-        # 43: HG
+        # 1-4: HG (using default of 4)
+        # -- Above injected, below from obs --
+        # 5-7: H1, H2, H3 text
+        # 8: Field Text
+        # 9: Info Text
+        # 10-21: P1 Text (12)
+        # 22-33: Opp Text (12)
+        # 34-39: P1 Num (6)
+        # 40-45: Opp Num (6)
+        # 46: Field Num (1)
 
         part_ids = torch.cat(
             [
-                torch.tensor([self.TEXT_A], dtype=torch.long).repeat(3),  # H1, H2, H3
-                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(
-                    12
-                ),  # P1 then Opp text
-                torch.tensor([self.NUM], dtype=torch.long).repeat(13),  # P1+Opp+Field Nums
+                torch.tensor([self.TEXT_A, self.TEXT_B], dtype=torch.long).repeat(12),  # P1+Opp
+                torch.tensor([self.NUM], dtype=torch.long).repeat(13),  # P1+Opp+Field
             ]
         )
         self.register_buffer("part_ids", part_ids, persistent=False)
 
-        type_ids = torch.zeros(44, dtype=torch.long)
+        type_ids = torch.zeros(43 + n_hg, dtype=torch.long)
         type_ids[0] = self.CLS
-        type_ids[1:3] = self.FIELD
-        type_ids[3] = self.H1
-        type_ids[4] = self.H2
-        type_ids[5] = self.H3
+        type_ids[1 : 1 + n_hg] = self.HG
 
-        # P1 Texts (6-17)
-        type_ids[6:8] = self.TEAM_SLOT_0
-        type_ids[8:10] = self.TEAM_SLOT_1
-        type_ids[10:14] = self.TEAM_BENCH
-        type_ids[14:18] = self.TEAM_DROPPED
+        type_ids[n_hg + 1] = self.H1
+        type_ids[n_hg + 2] = self.H2
+        type_ids[n_hg + 3] = self.H3
 
-        # Opp Texts (18-29)
-        type_ids[18:20] = self.OPP_SLOT_0
-        type_ids[20:22] = self.OPP_SLOT_1
-        type_ids[22:26] = self.OPP_BENCH
-        type_ids[26:30] = self.OPP_DROPPED
+        type_ids[n_hg + 4] = self.FIELD
+        type_ids[n_hg + 5] = self.FIELD
 
-        # P1 Nums (30-35)
-        type_ids[30] = self.TEAM_SLOT_0
-        type_ids[31] = self.TEAM_SLOT_1
-        type_ids[32:34] = self.TEAM_BENCH
-        type_ids[34:36] = self.TEAM_DROPPED
+        # P1 Texts
+        type_ids[n_hg + 6 : n_hg + 8] = self.TEAM_SLOT_0
+        type_ids[n_hg + 8 : n_hg + 10] = self.TEAM_SLOT_1
+        type_ids[n_hg + 10 : n_hg + 14] = self.TEAM_BENCH
+        type_ids[n_hg + 14 : n_hg + 18] = self.TEAM_DROPPED
 
-        # Opp Nums (36-41)
-        type_ids[36] = self.OPP_SLOT_0
-        type_ids[37] = self.OPP_SLOT_1
-        type_ids[38:40] = self.OPP_BENCH
-        type_ids[40:42] = self.OPP_DROPPED
+        # Opp Texts
+        type_ids[n_hg + 18 : n_hg + 20] = self.OPP_SLOT_0
+        type_ids[n_hg + 20 : n_hg + 22] = self.OPP_SLOT_1
+        type_ids[n_hg + 22 : n_hg + 26] = self.OPP_BENCH
+        type_ids[n_hg + 26 : n_hg + 30] = self.OPP_DROPPED
 
-        # Field Nums (42)
-        type_ids[42] = self.FIELD
-        # HG (43)
-        type_ids[43] = self.HG
+        # P1 Num
+        type_ids[n_hg + 30] = self.TEAM_SLOT_0
+        type_ids[n_hg + 31] = self.TEAM_SLOT_1
+        type_ids[n_hg + 32 : n_hg + 34] = self.TEAM_BENCH
+        type_ids[n_hg + 34 : n_hg + 36] = self.TEAM_DROPPED
+
+        # Opp Num
+        type_ids[n_hg + 36] = self.OPP_SLOT_0
+        type_ids[n_hg + 37] = self.OPP_SLOT_1
+        type_ids[n_hg + 38 : n_hg + 40] = self.OPP_BENCH
+        type_ids[n_hg + 40 : n_hg + 42] = self.OPP_DROPPED
+
+        # Field Num
+        type_ids[n_hg + 42] = self.FIELD
         self.register_buffer("type_ids", type_ids, persistent=False)
 
         self._init_weights()
@@ -144,46 +155,48 @@ class CLSReducer(nn.Module):
         init.normal_(self.part_emb.weight, std=emb_gain)
 
     def forward(
-        self, obs: torch.Tensor, state: tuple[torch.Tensor, torch.Tensor] | None = None
+        self,
+        obs: torch.Tensor,
+        state: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         if obs.dim() == 2:
             obs = obs.unsqueeze(0)
+
         B, S, F = obs.shape
         if S != self.seq_len or F != self.feat_dim:
             raise ValueError(f"Got shape ({S}, {F}). Expected ({self.seq_len}, {self.feat_dim})")
 
         x = self.in_proj(obs)
+        cls_base = self.cls_base.expand(B, -1, -1)
+        global_ctx = x.mean(dim=1, keepdim=True)
+        cls_tok = cls_base + self.cls_conditioner(global_ctx)
 
         if state is None:
-            hg_prev = torch.zeros(B, self.d_model, device=obs.device)
-            cls_prev = torch.zeros(B, self.d_model, device=obs.device)
+            cls_prev = cls_base
+            hg_prev = self.hg_init.expand(B, -1, -1)
         else:
-            hg_prev, cls_prev = state
+            cls_prev, hg_prev = state
+            if cls_prev.dim() == 2:
+                cls_prev = cls_prev.unsqueeze(1)
 
-        # h1_curr is at index 2 of obs
-        h1_curr = x[:, 2]
-        hg_curr = self.history_gru(torch.cat([cls_prev, h1_curr], dim=-1), hg_prev)
+        h1_new = x[:, :1]
+        hg_in = torch.cat([hg_prev, cls_prev, h1_new], dim=1)
+        hg = self.history_transformer(hg_in)[:, : self.n_hg]
 
-        global_ctx = x.mean(dim=1, keepdim=True)
-        cls = self.cls_base.expand(B, -1, -1) + self.cls_conditioner(global_ctx)
+        seq = torch.cat([cls_tok, hg, x], dim=1)
 
-        # x is (B, 42, D)
-        # Add HG at the end
-        x = torch.cat([cls, x, hg_curr.unsqueeze(1)], dim=1)  # (B, 44, D)
+        if seq.size(1) != self.type_ids.numel():
+            raise RuntimeError(
+                f"Final seq len {seq.size(1)} does not match type_ids len {self.type_ids.numel()}"
+            )
 
-        type_e = self.type_emb(self.type_ids).unsqueeze(0).expand(B, -1, -1)
-        part_e = self.part_emb(self.part_ids).unsqueeze(0).expand(B, -1, -1)
+        seq = seq + self.type_emb(self.type_ids).unsqueeze(0)
 
-        x += type_e
-        # part_ids apply to index 3 to 42 (H1-H3, P1-Opp texts, P1-Opp-Field nums)
-        # transformer indices:
-        # 0: CLS
-        # 1: Field Text (no part_id)
-        # 2: Info Text (no part_id)
-        # 3-42: part_ids apply
-        # 43: HG (no part_id)
-        x[:, 3:43, :] += part_e
+        part_start = 1 + self.n_hg + 5
+        seq[:, part_start:] += self.part_emb(self.part_ids).unsqueeze(0)
 
-        x = self.encoder(x)
-        cls_out = x[:, 0]
-        return cls_out, (hg_curr, cls_out)
+        enc = self.encoder(seq)
+        cls = enc[:, 0]
+
+        next_state = (cls, hg)
+        return cls, next_state

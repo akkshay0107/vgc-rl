@@ -16,13 +16,14 @@ class PolicyNet(nn.Module):
         d_model=256,
         nhead=8,
         nlayer=3,
-        net_arch=(256, 256, 128),
+        net_arch=(256, 256),
+        n_hg=4,
     ):
         super().__init__()
         self.seq_len, self.feat_dim = obs_dim
         self.act_size = act_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.reducer = CLSReducer(self.seq_len, self.feat_dim, d_model, nhead, nlayer)
+        self.reducer = CLSReducer(self.seq_len, self.feat_dim, d_model, nhead, nlayer, n_hg=n_hg)
 
         layers = [nn.Linear(d_model, net_arch[0]), nn.ReLU()]
         for h_in, h_out in zip(net_arch[:-1], net_arch[1:]):

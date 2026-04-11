@@ -514,7 +514,7 @@ def from_battle(battle: AbstractBattle):
     opp_flat = [text for pair in opp_txt_pairs for text in pair]  # 12
 
     text_emb = encode_texts(
-        [field_txt, info_txt, h1_txt, h2_txt, h3_txt, *p1_flat, *opp_flat]
+        [h1_txt, h2_txt, h3_txt, field_txt, info_txt, *p1_flat, *opp_flat]
     )  # 1 + 1 + 3 + 12 + 12 = 29 tokens
 
     num_rows = torch.tensor(p1_arr + opp_arr)  # 6 + 6 = 12 rows
