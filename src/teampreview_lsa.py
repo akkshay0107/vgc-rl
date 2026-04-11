@@ -51,6 +51,7 @@ class LSATeamPreviewModel:
         self.doc_vectors: np.ndarray | None = None 
         self.bring_labels: list[tuple[int, ...]] = []  
         self.lead_labels: list[tuple[int, ...]] = []   # subset of bring currently
+        self.win_labels: list[bool] = []   # whether our side won for weighting at inference 
         self.team_size: int = 6
 
     def fit(
@@ -59,10 +60,14 @@ class LSATeamPreviewModel:
         bring_labels: list[tuple[int, ...]],
         lead_labels: list[tuple[int, ...]],
         team_size: int = 6,
+        win_labels: list[bool] | None = None,
     ) -> LSATeamPreviewModel:
         if not documents or len(documents) != len(bring_labels) or len(documents) != len(lead_labels):
             raise ValueError("documents, bring_labels, and lead_labels must have same length")
         self.team_size = team_size
+        if win_labels is not None and len(win_labels) != len(documents):
+            raise ValueError("win_labels must have same length as documents")
+        self.win_labels = list(win_labels) if win_labels is not None else []
 
         self.vectorizer = TfidfVectorizer(
             lowercase=True,
@@ -104,7 +109,12 @@ class LSATeamPreviewModel:
 
         top_n = min(len(sims), max(20, self.max_preds * 2))
         top_idx = np.argsort(sims)[::-1][:top_n]
-        weights = sims[top_idx]
+        weights = sims[top_idx].astype(np.float64)
+        if self.win_labels:
+            win_bonus = 1.5
+            for k, i in enumerate(top_idx):
+                if i < len(self.win_labels) and self.win_labels[i]:
+                    weights[k] *= win_bonus
         if np.sum(weights) <= 0:
 
             indices = self.rng.choice(self.team_size, size=min(bring_k, self.team_size), replace=False)
@@ -163,12 +173,13 @@ class LSATeamPreviewModel:
             "doc_vectors": self.doc_vectors,
             "bring_labels": self.bring_labels,
             "lead_labels": self.lead_labels,
+            "win_labels": getattr(self, "win_labels", []),
         }
         torch.save(state, path)
 
     @classmethod
     def load(cls, path: str | Path, **kwargs: Any) -> LSATeamPreviewModel:
-        state = torch.load(path, map_location="gpu", weights_only=False) #cpu
+        state = torch.load(path, map_location="cpu", weights_only=False)
         model = cls(
             n_components=state.get("n_components", 50),
             max_preds=state.get("max_preds", 10),
@@ -181,6 +192,7 @@ class LSATeamPreviewModel:
         model.doc_vectors = state["doc_vectors"]
         model.bring_labels = state["bring_labels"]
         model.lead_labels = state["lead_labels"]
+        model.win_labels = state.get("win_labels", [])
         for k, v in kwargs.items():
             if hasattr(model, k):
                 setattr(model, k, v)

@@ -10,7 +10,7 @@ from poke_env.player import MaxBasePowerPlayer, RandomPlayer, SimpleHeuristicsPl
 sys.path.insert(1, str(Path(__file__).resolve().parent.parent / "src"))
 
 from heuristic import FuzzyHeuristic
-from teampreview import TeamPreviewHandler
+from teampreviewhandler import TeamPreviewHandler
 from teams import RandomTeamFromPool
 
 

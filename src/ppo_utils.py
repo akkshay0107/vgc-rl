@@ -3,7 +3,7 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import Optional, Self
 
 import torch
 
@@ -38,6 +38,8 @@ class PPOConfig:
     min_pool_win_rate_weight: float = 0.1
     pool_cache_size: int = 5
     self_play_prob: float = 0.5
+    # Optional path to LSA. Both agents use it for teampreview if true.
+    teampreview_lsa_path: Optional[Path] = None
 
 
 class RolloutBuffer:

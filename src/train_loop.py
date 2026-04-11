@@ -7,6 +7,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import cast
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -54,6 +55,28 @@ scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.num_epi
 
 if policy.device.type == "cuda":
     policy = cast(PolicyNet, torch.compile(policy))
+
+def _patch_env_teampreview(env, handler):
+    from poke_env.battle import AbstractBattle
+
+    async def _teampreview_async(battle: AbstractBattle) -> str:
+        return handler.select_team(battle)
+
+    env.agent1._teampreview = _teampreview_async
+    env.agent2._teampreview = _teampreview_async
+
+
+def _create_teampreview_handler():
+    from teampreviewhandler import TeamPreviewHandler
+
+    path = getattr(config, "teampreview_lsa_path", None)
+    if path is not None:
+        path = Path(path)
+    if path is not None and path.exists():
+        from teampreview_lsa import LSATeamPreviewModel
+        model = LSATeamPreviewModel.load(path)
+        return TeamPreviewHandler(model=model)
+    return TeamPreviewHandler()
 
 
 def collect_rollout(env, buffer, opponent_policy: PolicyNet, is_self_play: bool = False) -> bool:
@@ -299,6 +322,9 @@ def ppo_update(rollout_data):
 
 def main():
     envs = [SimEnv.build_env(env_id=i) for i in range(config.n_jobs)]
+    tp_handler = _create_teampreview_handler()
+    for env in envs:
+        _patch_env_teampreview(env, tp_handler)
     buffer = RolloutBuffer()
     executor = ThreadPoolExecutor(max_workers=config.n_jobs)
 

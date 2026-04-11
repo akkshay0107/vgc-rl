@@ -3,7 +3,7 @@ import asyncio
 import random
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from pathlib import Path
 
 import numpy as np
@@ -114,7 +114,7 @@ def get_opponent(fmt: str, team: Teambuilder) -> Player:
         )
     elif num < 0.7:
         return SimpleHeuristicsPlayer(
-            account_configuration=AccountConfiguration(name, None),
+            account_configuration=AccountConfiguration(name, None), 
             battle_format=fmt,
             server_configuration=LocalhostServerConfiguration,
             team=team,
@@ -138,29 +138,77 @@ def get_opponent(fmt: str, team: Teambuilder) -> Player:
         )
 
 
+def _team_species_list(battle: DoubleBattle, our_side: bool) -> list[str]:
+    from teampreviewhandler import team_species
+    return team_species(battle, our_side=our_side)
+
+
+def _opponent_bring_lead_from_battle(battle: DoubleBattle) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    team_list = list(battle.opponent_team.values())
+    if len(team_list) < 2:
+        return (0, 1, 2, 3)[: len(team_list)], (0, 1)[: min(2, len(team_list))]
+    try:
+        a0, a1 = battle.opponent_active_pokemon[0], battle.opponent_active_pokemon[1]
+    except (IndexError, TypeError):
+        return tuple(range(min(4, len(team_list)))), (0, 1)
+    lead_idx = []
+    for a in (a0, a1):
+        if a is None:
+            continue
+        for i, m in enumerate(team_list):
+            if m is a or getattr(m, "species", m) == getattr(a, "species", None):
+                lead_idx.append(i)
+                break
+    lead_idx = lead_idx[:2]
+    if len(lead_idx) < 2:
+        lead_idx = list(lead_idx) + [i for i in range(6) if i not in lead_idx][: 2 - len(lead_idx)]
+    other_bring = [i for i in range(6) if i not in lead_idx][:2]
+    bring = tuple(list(lead_idx) + other_bring)[:4]
+    lead = tuple(lead_idx[:2])
+    return bring, lead
+
+
 class ReplayRecordingPlayer(Player, ABC):
-    def __init__(self, save_dir, *args, **kwargs):
+    def __init__(self, save_dir, *args, save_lsa_logs: bool = True, expert_side: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.save_dir = save_dir
         self.episode_data = []
+        self.save_lsa_logs = save_lsa_logs
+        self.expert_side = expert_side  
+        self._teampreview_samples: list = []
+        self._pending_teampreview: dict | None = None
 
     def _save_episode_data(self):
-        if not self.episode_data:
+        if not self.episode_data and not self._teampreview_samples:
             return None
 
         save_dir = Path(self.save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
 
         uid = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}_{uuid.uuid4().hex[:10]}"
-        save_path = save_dir / f"{uid}.replay"
-        tmp_path = save_dir / f"{uid}.replay.tmp"
 
-        torch.save(self.episode_data, tmp_path)
-        tmp_path.replace(save_path)
-        print(f"Replays saved to {save_path}")
+        if self.episode_data:
+            save_path = save_dir / f"{uid}.replay"
+            tmp_path = save_dir / f"{uid}.replay.tmp"
+            torch.save(self.episode_data, tmp_path)
+            tmp_path.replace(save_path)
+            print(f"Replays saved to {save_path}")
+            self.episode_data = []
 
-        self.episode_data = []
-        return str(save_path)
+        if self.save_lsa_logs and self._teampreview_samples:
+            from parse_showdown_logs import build_log_from_teampreview_sample
+            for i, s in enumerate(self._teampreview_samples):
+                log_path = save_dir / f"{uid}_lsa_{i}.log"
+                log_text = build_log_from_teampreview_sample(
+                    s["p1_species"], s["p2_species"],
+                    s["p1_bring"], s["p1_lead"], s["p2_bring"], s["p2_lead"],
+                    p1_won=s.get("p1_won", True),
+                    expert_side=self.expert_side,
+                )
+                log_path.write_text(log_text, encoding="utf-8")
+            self._teampreview_samples = []
+
+        return str(save_dir)
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
@@ -170,6 +218,22 @@ class ReplayRecordingPlayer(Player, ABC):
         assert isinstance(battle, DoubleBattle)
         if battle._wait:
             return DefaultBattleOrder()
+
+        if self.save_lsa_logs and self._pending_teampreview is not None:
+            try:
+                p2_bring, p2_lead = _opponent_bring_lead_from_battle(battle)
+                self._teampreview_samples.append({
+                    **self._pending_teampreview,
+                    "p2_bring": p2_bring,
+                    "p2_lead": p2_lead,
+                    "p1_won": None,
+                })
+            except Exception:
+                pass
+            self._pending_teampreview = None
+
+        if self.save_lsa_logs and self._teampreview_samples and battle.finished:
+            self._teampreview_samples[-1]["p1_won"] = battle.won
 
         obs = self.get_observation(battle)
         action_mask = observation_builder.get_action_mask(battle)
@@ -183,7 +247,27 @@ class ReplayRecordingPlayer(Player, ABC):
         pass
 
     def teampreview(self, battle: AbstractBattle) -> str:
-        return super().random_teampreview(battle)
+        choice = super().random_teampreview(battle)
+        if self.save_lsa_logs and isinstance(battle, DoubleBattle):
+            try:
+                p1_species = _team_species_list(battle, our_side=True)
+                p2_species = _team_species_list(battle, our_side=False)
+                if len(p1_species) == 6 and len(p2_species) == 6 and choice.startswith("/team "):
+                    digits = [int(c) for c in choice.replace("/team ", "").strip() if c.isdigit()][:4]
+                    if len(digits) >= 4:
+                        bring_1based = tuple(digits)
+                        lead_1based = tuple(digits[:2])
+                        p1_bring = tuple(x - 1 for x in bring_1based)
+                        p1_lead = tuple(x - 1 for x in lead_1based)
+                        self._pending_teampreview = {
+                            "p1_species": p1_species,
+                            "p2_species": p2_species,
+                            "p1_bring": p1_bring,
+                            "p1_lead": p1_lead,
+                        }
+            except Exception:
+                pass
+        return choice
 
 
 class TerminalPlayer(ReplayRecordingPlayer):
@@ -301,6 +385,7 @@ async def main():
             team=team,
             accept_open_team_sheet=True,
             max_concurrent_battles=1,
+            expert_side="p1",
         )
     elif args.mbp:
         save_dir = "./replays/max_base_power"

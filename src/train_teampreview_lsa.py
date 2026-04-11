@@ -47,12 +47,14 @@ def check_checkpoint(path):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--replays_dir", type=str, default=None, help="Directory with replay files")
-    ap.add_argument("--out", type=str, default="teampreview_lsa.pt", help="Output path for model")
+    ap.add_argument("--out", type=str, default="teampreview_lsa.pt", help="Output path")
     ap.add_argument("--n_components", type=int, default=50, help="dimensions")
-    ap.add_argument("--max_preds", type=int, default=10, help="Max documents for inference")
+    ap.add_argument("--max_preds", type=int, default=10, help="Max logs for inference")
     ap.add_argument("--temperature", type=float, default=1.0, help="temperature")
-    ap.add_argument("--min_similarity", type=float, default=0.0, help="min cosine similarity")
+    ap.add_argument("--min_similarity", type=float, default=0.0, help="min similarity")
     ap.add_argument("--limit", type=int, default=0, help="Max number of samples to load, 0 = all)")
+    ap.add_argument("--no-recursive", action="store_true", help="Do not search replays_dir recursively")
+    ap.add_argument("--wins-only", action="store_true", help="Only use samples where the recorded side won")
     ap.add_argument("--check", type=str, default=None, metavar="PATH", help="Validate existing .pt checkpoint")
     args = ap.parse_args()
 
@@ -67,7 +69,8 @@ def main() -> None:
         replays_dir = Path(args.replays_dir)
         if not replays_dir.is_dir():
             raise FileNotFoundError(f"Not a directory: {replays_dir}")
-        for i, sample in enumerate(parse_replays_dir(replays_dir)):
+        recursive = not args.no_recursive
+        for i, sample in enumerate(parse_replays_dir(replays_dir, recursive=recursive)):
             samples.append(sample)
             if args.limit and len(samples) >= args.limit:
                 break
@@ -75,8 +78,11 @@ def main() -> None:
     if not samples:
         raise RuntimeError("No valid team-preview samples found")
 
-    documents, bring_labels, lead_labels = documents_and_labels(samples)
-    print(f"Loaded {len(documents)} training samples")
+    documents, bring_labels, lead_labels, wins = documents_and_labels(
+        samples, use_wins_only=args.wins_only
+    )
+    n_wins = sum(wins)
+    print(f"Loaded {len(documents)} training samples ({n_wins} wins)")
 
     model = LSATeamPreviewModel(
         n_components=args.n_components,
@@ -84,7 +90,7 @@ def main() -> None:
         temperature=args.temperature,
         min_similarity=args.min_similarity,
     )
-    model.fit(documents, bring_labels, lead_labels, team_size=6)
+    model.fit(documents, bring_labels, lead_labels, team_size=6, win_labels=wins)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

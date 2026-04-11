@@ -22,7 +22,49 @@ def _normalize_species(details: str) -> str:
     return base.replace(" ", "").replace("'", "")
 
 
-def _parse_battle_log(lines: list[str]) -> Iterator[dict]:
+def build_log_from_teampreview_sample(
+    p1_species: list[str],
+    p2_species: list[str],
+    p1_bring: tuple[int, ...],
+    p1_lead: tuple[int, ...],
+    p2_bring: tuple[int, ...],
+    p2_lead: tuple[int, ...],
+    *,
+    p1_won: bool = True,
+    expert_side: str | None = None,
+) -> str:
+    prefix = ""
+    if expert_side in ("p1", "p2"):
+        prefix = f"# expert_side={expert_side}\n"
+    lines: list[str] = []
+    for player, species_list in (("p1", p1_species), ("p2", p2_species)):
+        for spec in species_list:
+            details = f"{spec}, L50" if spec else "Unknown, L50"
+            lines.append(f"|poke|{player}|{details}|")
+    lines.append("|teampreview|")
+    lines.append("|start|")
+
+    p1_order = list(p1_lead[:2]) + [b for b in p1_bring if b not in p1_lead][:2]
+    p2_order = list(p2_lead[:2]) + [b for b in p2_bring if b not in p2_lead][:2]
+    for slot, species_list, order in (
+        ("p1a", p1_species, p1_order),
+        ("p1b", p1_species, p1_order),
+        ("p1c", p1_species, p1_order),
+        ("p1d", p1_species, p1_order),
+        ("p2a", p2_species, p2_order),
+        ("p2b", p2_species, p2_order),
+        ("p2c", p2_species, p2_order),
+        ("p2d", p2_species, p2_order),
+    ):
+        idx = (ord(slot[-1]) - ord("a")) % 4
+        if idx < len(order) and order[idx] < len(species_list):
+            spec = species_list[order[idx]]
+            lines.append(f"|switch|{slot}|{spec}, L50|")
+    lines.append("|win|p1|" if p1_won else "|win|p2|")
+    return prefix + "\n".join(lines)
+
+
+def _parse_battle_log(lines: list[str], expert_side: str | None = None) -> Iterator[dict]:
     p1_pokes: list[str] = []
     p2_pokes: list[str] = []
     seen_teampreview = False
@@ -50,18 +92,19 @@ def _parse_battle_log(lines: list[str]) -> Iterator[dict]:
             seen_teampreview = True
             i += 1
             continue
-        # |start or |start| (log may omit trailing pipe)
         if (line == "|start|" or line == "|start") and seen_teampreview and len(p1_pokes) == 6 and len(p2_pokes) == 6:
-            # In doubles we only have p1a, p1b (and p2a, p2b). The 4 brought are the 4 unique
-            # species that appear in any |switch| for that side, in order of first appearance.
             p1_seen_order: list[str] = []
             p2_seen_order: list[str] = []
             p1_seen_set: set[str] = set()
             p2_seen_set: set[str] = set()
+            winner = "p1"
             j = i + 1
             while j < len(lines):
                 ln = lines[j]
                 if ln.startswith("|win|"):
+                    parts = ln.split("|")
+                    if len(parts) >= 3:
+                        winner = parts[2].strip().lower()
                     break
                 if ln.startswith("|switch|"):
                     parts = ln.split("|")
@@ -102,24 +145,48 @@ def _parse_battle_log(lines: list[str]) -> Iterator[dict]:
                 lead = tuple(bring[:2])
                 return bring, lead
 
-            # Need at least 2 unique species per side (the leads); we fill to 4 from team if needed
             if len(p1_seen_order) >= 2 and len(p2_seen_order) >= 2:
                 p1_bring, p1_lead = build_bring_lead(p1_seen_order, p1_pokes)
                 p2_bring, p2_lead = build_bring_lead(p2_seen_order, p2_pokes)
-                yield {
-                    "our_species": list(p1_pokes),
-                    "opp_species": list(p2_pokes),
-                    "bring": p1_bring,
-                    "lead": p1_lead,
-                }
-                yield {
-                    "our_species": list(p2_pokes),
-                    "opp_species": list(p1_pokes),
-                    "bring": p2_bring,
-                    "lead": p2_lead,
-                }
+                p1_won = winner in ("p1", "player1")
+                if expert_side is None or expert_side not in ("p1", "p2"):
+                    yield {
+                        "our_species": list(p1_pokes),
+                        "opp_species": list(p2_pokes),
+                        "bring": p1_bring,
+                        "lead": p1_lead,
+                        "won": p1_won,
+                    }
+                    yield {
+                        "our_species": list(p2_pokes),
+                        "opp_species": list(p1_pokes),
+                        "bring": p2_bring,
+                        "lead": p2_lead,
+                        "won": not p1_won,
+                    }
+                elif expert_side == "p1":
+                    yield {
+                        "our_species": list(p1_pokes),
+                        "opp_species": list(p2_pokes),
+                        "bring": p1_bring,
+                        "lead": p1_lead,
+                        "won": p1_won,
+                    }
+                else:
+                    assert expert_side == "p2"
+                    yield {
+                        "our_species": list(p2_pokes),
+                        "opp_species": list(p1_pokes),
+                        "bring": p2_bring,
+                        "lead": p2_lead,
+                        "won": not p1_won,
+                    }
             break
         i += 1
+
+
+def parse_log_lines(lines: list[str]) -> Iterator[dict]:
+    yield from _parse_battle_log(lines)
 
 
 def parse_html_replay(path: str | Path) -> Iterator[dict]:
@@ -138,34 +205,69 @@ def parse_html_replay(path: str | Path) -> Iterator[dict]:
     yield from _parse_battle_log(lines)
 
 
-def parse_replays_dir(replays_dir: str | Path) -> Iterator[dict]:
+def parse_raw_log_replay(path: str | Path) -> Iterator[dict]:
+    path = Path(path)
+    if path.suffix.lower() not in (".log", ".txt"):
+        return
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    expert_side = None
+    if lines and lines[0].startswith("# expert_side="):
+        expert_side = lines[0].split("=", 1)[1].strip().lower()
+        if expert_side not in ("p1", "p2"):
+            expert_side = None
+        else:
+            lines = lines[1:]
+    yield from _parse_battle_log(lines, expert_side=expert_side)
 
+
+def parse_replays_dir(replays_dir: str | Path, recursive: bool = True) -> Iterator[dict]:
     replays_dir = Path(replays_dir)
-    for path in sorted(replays_dir.glob("*.html")) + sorted(replays_dir.glob("*.htm")):
+    if not replays_dir.is_dir():
+        return
+    if recursive:
+        html_paths = sorted(replays_dir.rglob("*.html")) + sorted(replays_dir.rglob("*.htm"))
+        raw_paths = sorted(replays_dir.rglob("*.log")) + sorted(replays_dir.rglob("*.txt"))
+    else:
+        html_paths = sorted(replays_dir.glob("*.html")) + sorted(replays_dir.glob("*.htm"))
+        raw_paths = sorted(replays_dir.glob("*.log")) + sorted(replays_dir.glob("*.txt"))
+    for path in html_paths:
         yield from parse_html_replay(path)
+    for path in raw_paths:
+        yield from parse_raw_log_replay(path)
 
 
 def documents_and_labels(
     samples: list[dict],
-) -> tuple[list[str], list[tuple[int, ...]], list[tuple[int, ...]]]:
+    use_wins_only: bool = False,
+) -> tuple[list[str], list[tuple[int, ...]], list[tuple[int, ...]], list[bool]]:
     from teampreview_lsa import matchup_string
 
+    if use_wins_only:
+        samples = [s for s in samples if s.get("won", True)]
     documents: list[str] = []
     bring_labels: list[tuple[int, ...]] = []
     lead_labels: list[tuple[int, ...]] = []
+    wins: list[bool] = []
     for s in samples:
         documents.append(matchup_string(s["our_species"], s["opp_species"]))
         bring_labels.append(s["bring"])
         lead_labels.append(s["lead"])
-    return documents, bring_labels, lead_labels
+        wins.append(s.get("won", True))
+    return documents, bring_labels, lead_labels, wins
 
 
 if __name__ == "__main__":
     import sys
     replays_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("replays")
     samples = list(parse_replays_dir(replays_dir))
-    print(f"Parsed {len(samples)} teampreview samples from {replays_dir}")
+    n_wins = sum(1 for s in samples if s.get("won", True))
+    print(f"Parsed {len(samples)} teampreview samples from {replays_dir} ({n_wins} wins)")
     for i, s in enumerate(samples):
-        print(f"  {i+1}. our={s['our_species']}, bring={s['bring']}, lead={s['lead']}")
+        w = "W" if s.get("won", True) else "L"
+        print(f"  {i+1}. [{w}] our={s['our_species']}, bring={s['bring']}, lead={s['lead']}")
     if not samples:
         print("No samples found.")
