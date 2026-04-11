@@ -155,10 +155,7 @@ def train_behavior_cloning(
                 train_total += target.numel()
                 train_correct += (preds == target).sum().item()
 
-                state = (
-                    next_state[0].detach(),
-                    next_state[1].detach(),
-                )
+                state = next_state  # BPTT
 
             episode_loss = episode_loss / len(episode)
             (episode_loss / batch_size).backward()

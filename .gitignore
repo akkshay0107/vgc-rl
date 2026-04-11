@@ -24,3 +24,7 @@ ppo_best_checkpoint.pt
 # Replays
 replays/*
 test_replays/*
+
+# Training logs + tensorboard
+runs/
+*.log

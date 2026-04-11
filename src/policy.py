@@ -131,8 +131,8 @@ class PolicyNet(nn.Module):
         actions: torch.Tensor,
         action_mask: torch.Tensor | None = None,
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        policy_logits, _, _, value, _ = self(obs, state, action_mask, sample_actions=False)
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        policy_logits, _, _, value, next_state = self(obs, state, action_mask, sample_actions=False)
 
         if action_mask is not None:
             logits = self._apply_masks(policy_logits, action_mask)
@@ -149,7 +149,7 @@ class PolicyNet(nn.Module):
 
         entropy = cat1.entropy() + cat2.entropy()
 
-        return log_prob, entropy, value
+        return log_prob, entropy, value, next_state
 
     def _apply_masks(self, logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
         # Replace logits of illegal actions with -inf so they have zero probability

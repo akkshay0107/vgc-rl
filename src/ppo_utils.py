@@ -24,7 +24,7 @@ class PPOConfig:
     gamma: float = 0.96  # effective horizon = ~25 turns
     gae_lambda: float = 0.98  # sparse reward counteraction
     lr: float = 1e-4
-    batch_size: int = 64
+    batch_size: int = 8
     clip_range: float = 0.2
     entropy_coef: float = 0.01
     value_coef: float = 0.5
@@ -57,14 +57,8 @@ class RolloutBuffer:
             self.trajectories.append(trajectory)
 
     def get_batches(self, device: torch.device, config: PPOConfig):
-        obs = []
-        actions = []
-        log_probs = []
-        action_masks = []
-        states_cls = []
-        states_hg = []
-        advantages = []
-        returns = []
+        all_episodes = []
+        all_advantages = []
 
         for traj in self.trajectories:
             rewards = torch.cat([step["rewards"] for step in traj], dim=0).float()
@@ -83,48 +77,26 @@ class RolloutBuffer:
 
             ret = adv + values
 
-            for t, step in enumerate(traj):
-                obs.append(step["obs"])
-                actions.append(step["actions"])
-                log_probs.append(step["log_probs"])
-                action_masks.append(step["action_masks"])
-                states_cls.append(step["state"][0])
-                states_hg.append(step["state"][1])
-                advantages.append(adv[t : t + 1])
-                returns.append(ret[t : t + 1])
+            episode_data = {
+                "obs": torch.cat([step["obs"] for step in traj], dim=0),
+                "actions": torch.cat([step["actions"] for step in traj], dim=0),
+                "log_probs": torch.cat([step["log_probs"] for step in traj], dim=0),
+                "action_masks": torch.cat([step["action_masks"] for step in traj], dim=0),
+                "advantages": adv,
+                "returns": ret,
+            }
+            all_episodes.append(episode_data)
+            all_advantages.append(adv)
 
-        flat_obs = torch.cat(obs, dim=0).contiguous()
-        flat_actions = torch.cat(actions, dim=0).contiguous()
-        flat_log_probs = torch.cat(log_probs, dim=0).contiguous()
-        flat_action_masks = torch.cat(action_masks, dim=0).contiguous()
-        flat_states_cls = torch.cat(states_cls, dim=0).contiguous()
-        flat_states_hg = torch.cat(states_hg, dim=0).contiguous()
-        flat_advantages = torch.cat(advantages, dim=0).contiguous()
-        flat_returns = torch.cat(returns, dim=0).contiguous()
+        # Global normalization of advantages
+        if all_advantages:
+            flat_adv = torch.cat(all_advantages, dim=0)
+            adv_mean = flat_adv.mean()
+            adv_std = flat_adv.std() + 1e-8
+            for ep in all_episodes:
+                ep["advantages"] = (ep["advantages"] - adv_mean) / adv_std
 
-        flat_advantages = (flat_advantages - flat_advantages.mean()) / (
-            flat_advantages.std() + 1e-8
-        )
-
-        if device.type == "cuda":
-            flat_obs = flat_obs.pin_memory()
-            flat_actions = flat_actions.pin_memory()
-            flat_log_probs = flat_log_probs.pin_memory()
-            flat_action_masks = flat_action_masks.pin_memory()
-            flat_states_cls = flat_states_cls.pin_memory()
-            flat_states_hg = flat_states_hg.pin_memory()
-            flat_advantages = flat_advantages.pin_memory()
-            flat_returns = flat_returns.pin_memory()
-
-        return {
-            "obs": flat_obs,
-            "actions": flat_actions,
-            "log_probs": flat_log_probs,
-            "advantages": flat_advantages,
-            "returns": flat_returns,
-            "action_masks": flat_action_masks,
-            "states": (flat_states_cls, flat_states_hg),
-        }
+        return all_episodes
 
 
 def save_checkpoint(path: Path, episode: int, policy: PolicyNet, optimizer=None, scheduler=None):

@@ -32,7 +32,7 @@ _buffer_lock = threading.Lock()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("training_continuous.log"), logging.StreamHandler(sys.stdout)],
+    handlers=[logging.FileHandler("training.log"), logging.StreamHandler(sys.stdout)],
 )
 
 shutdown_requested = False
@@ -117,8 +117,6 @@ def collect_rollout(
             )
         )
 
-        state1_store = state_to_cpu(state1)
-
         # store both sides of the game if self play
         if is_self_play:
             obs2 = obs[agent2].unsqueeze(0).to(policy.device, non_blocking=True)
@@ -130,7 +128,6 @@ def collect_rollout(
                     non_blocking=True,
                 )
             )
-            state2_store = state_to_cpu(state2)
 
             combined_obs = torch.cat([obs1, obs2], dim=0)
             combined_masks = torch.cat([mask1, mask2], dim=0)
@@ -195,7 +192,6 @@ def collect_rollout(
                 "rewards": torch.tensor([rewards[agent1]], dtype=torch.float32),
                 "dones": torch.tensor([done], dtype=torch.float32),
                 "action_masks": mask1.cpu(),
-                "state": state1_store,
             }
         )
 
@@ -209,7 +205,6 @@ def collect_rollout(
                     "rewards": torch.tensor([rewards[agent2]], dtype=torch.float32),
                     "dones": torch.tensor([done], dtype=torch.float32),
                     "action_masks": mask2.cpu(),
-                    "state": state2_store,
                 }
             )
 
@@ -281,19 +276,9 @@ def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPo
     }
 
 
-def ppo_update(rollout_data):
+def ppo_update(episodes):
     policy.train()
     t0 = time.time()
-
-    observations = rollout_data["obs"]
-    actions = rollout_data["actions"]
-    old_log_probs = rollout_data["log_probs"]
-    advantages = rollout_data["advantages"]
-    returns = rollout_data["returns"]
-    action_masks = rollout_data["action_masks"]
-    states_cls, states_hg = rollout_data["states"]
-
-    n_samples = observations.shape[0]
 
     # overall metrics
     tot_avg_policy_loss = 0.0
@@ -303,86 +288,117 @@ def ppo_update(rollout_data):
     epochs_done = 0
 
     for epoch_idx in range(config.ppo_epochs):
-        # per epoch stats
-        avg_policy_loss = 0.0
-        avg_value_loss = 0.0
-        avg_entropy_loss = 0.0
-        avg_kl_div = 0.0
+        random.shuffle(episodes)
 
-        perm = torch.randperm(n_samples)
+        epoch_policy_loss = 0.0
+        epoch_value_loss = 0.0
+        epoch_entropy_loss = 0.0
+        epoch_kl_div = 0.0
+        total_steps = 0
 
-        for start in range(0, n_samples, config.batch_size):
-            idx = perm[start : start + config.batch_size]
+        optimizer.zero_grad(set_to_none=True)
+        episodes_since_step = 0
 
-            mb_observations = observations[idx].to(policy.device, non_blocking=True)
-            mb_actions = actions[idx].to(policy.device, non_blocking=True)
-            mb_old_log_probs = old_log_probs[idx].to(policy.device, non_blocking=True)
-            mb_advantages = advantages[idx].to(policy.device, non_blocking=True)
-            mb_returns = returns[idx].to(policy.device, non_blocking=True)
-            mb_action_masks = action_masks[idx].to(policy.device, non_blocking=True)
-            mb_states = (
-                states_cls[idx].to(policy.device, non_blocking=True),
-                states_hg[idx].to(policy.device, non_blocking=True),
-            )
+        for ep in episodes:
+            obs = ep["obs"].to(policy.device, non_blocking=True)
+            actions = ep["actions"].to(policy.device, non_blocking=True)
+            old_log_probs = ep["log_probs"].to(policy.device, non_blocking=True)
+            advantages = ep["advantages"].to(policy.device, non_blocking=True)
+            returns = ep["returns"].to(policy.device, non_blocking=True)
+            action_masks = ep["action_masks"].to(policy.device, non_blocking=True)
 
-            new_log_probs, entropy, new_values = policy.evaluate_actions(
-                mb_observations,
-                mb_actions,
-                mb_action_masks,
-                state=mb_states,
-            )
+            T = obs.shape[0]
+            state = initial_state(policy, 1, policy.device)
 
-            log_ratio = new_log_probs - mb_old_log_probs
-            ratio = torch.exp(log_ratio)
+            ep_loss = 0.0
+            ep_kl = 0.0
 
-            surr1 = ratio * mb_advantages
-            surr2 = (
-                torch.clamp(
-                    ratio,
-                    1.0 - config.clip_range,
-                    1.0 + config.clip_range,
+            for t in range(T):
+                # sequential evaluation to carry hidden state (BPTT)
+                curr_log_prob, curr_entropy, curr_val, next_state = policy.evaluate_actions(
+                    obs[t : t + 1],
+                    actions[t : t + 1],
+                    action_masks[t : t + 1],
+                    state=state,
                 )
-                * mb_advantages
-            )
 
-            policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = F.mse_loss(new_values, mb_returns)
-            entropy_loss = -entropy.mean()
+                log_ratio = curr_log_prob - old_log_probs[t : t + 1]
+                ratio = torch.exp(log_ratio)
 
-            loss = policy_loss + config.value_coef * value_loss + config.entropy_coef * entropy_loss
+                mb_adv = advantages[t : t + 1]
+                surr1 = ratio * mb_adv
+                surr2 = (
+                    torch.clamp(ratio, 1.0 - config.clip_range, 1.0 + config.clip_range) * mb_adv
+                )
 
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+                step_policy_loss = -torch.min(surr1, surr2).mean()
+                step_value_loss = F.mse_loss(curr_val, returns[t : t + 1])
+                step_entropy_loss = -curr_entropy.mean()
+
+                step_loss = (
+                    step_policy_loss
+                    + config.value_coef * step_value_loss
+                    + config.entropy_coef * step_entropy_loss
+                )
+
+                ep_loss = ep_loss + step_loss
+
+                with torch.no_grad():
+                    ep_kl += (old_log_probs[t : t + 1] - curr_log_prob).mean().item()
+
+                epoch_policy_loss += step_policy_loss.item()
+                epoch_value_loss += step_value_loss.item()
+                epoch_entropy_loss += step_entropy_loss.item()
+
+                state = next_state  # Carry forward without detaching
+                total_steps += 1
+
+            # Normalize episode loss and backward
+            if T > 0:
+                (ep_loss / T / config.batch_size).backward()
+
+            epoch_kl_div += ep_kl
+            episodes_since_step += 1
+
+            if episodes_since_step >= config.batch_size:
+                torch.nn.utils.clip_grad_norm_(policy.parameters(), config.max_grad_norm)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                episodes_since_step = 0
+
+        # Gradient accumulation final step
+        if episodes_since_step > 0:
             torch.nn.utils.clip_grad_norm_(policy.parameters(), config.max_grad_norm)
             optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
 
-            with torch.no_grad():
-                kl = (mb_old_log_probs - new_log_probs).mean().item()
+        if total_steps > 0:
+            avg_policy_loss = epoch_policy_loss / total_steps
+            avg_value_loss = epoch_value_loss / total_steps
+            avg_entropy_loss = epoch_entropy_loss / total_steps
+            avg_kl_div = epoch_kl_div / total_steps
 
-            avg_policy_loss += policy_loss.item()
-            avg_value_loss += value_loss.item()
-            avg_entropy_loss += entropy_loss.item()
-            avg_kl_div += kl
+            tot_avg_policy_loss += avg_policy_loss
+            tot_avg_value_loss += avg_value_loss
+            tot_avg_entropy_loss += avg_entropy_loss
+            tot_avg_kl_div += avg_kl_div
+            epochs_done += 1
 
-        num_mb = (n_samples + config.batch_size - 1) // config.batch_size
-        epochs_done += 1
+            if avg_kl_div > config.target_kl:
+                logging.info(
+                    f"Early stop at epoch {epoch_idx + 1}/{config.ppo_epochs} "
+                    f"(KL={avg_kl_div:.4f} > {config.target_kl:.4f})"
+                )
+                break
 
-        avg_policy_loss /= num_mb
-        avg_value_loss /= num_mb
-        avg_entropy_loss /= num_mb
-        avg_kl_div /= num_mb
-
-        tot_avg_policy_loss += avg_policy_loss
-        tot_avg_value_loss += avg_value_loss
-        tot_avg_entropy_loss += avg_entropy_loss
-        tot_avg_kl_div += avg_kl_div
-
-        if avg_kl_div > config.target_kl:
-            logging.info(
-                f"Early stop at epoch {epoch_idx + 1}/{config.ppo_epochs} "
-                f"(KL={avg_kl_div:.4f} > {config.target_kl:.4f})"
-            )
-            break
+    if epochs_done == 0:
+        return {
+            "policy_loss": 0,
+            "value_loss": 0,
+            "entropy_loss": 0,
+            "kl_divergence": 0,
+            "time": time.time() - t0,
+        }
 
     return {
         "policy_loss": tot_avg_policy_loss / epochs_done,
@@ -401,7 +417,7 @@ def main():
     config.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     config.pool_dir.mkdir(parents=True, exist_ok=True)
 
-    tb_writer = SummaryWriter(log_dir="runs/ppo_training_1")
+    tb_writer = SummaryWriter(log_dir="runs/ppo_training")
 
     # to guarantee executor shutdown
     try:
