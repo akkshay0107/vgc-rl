@@ -5,7 +5,7 @@ from poke_env.battle.effect import Effect
 from poke_env.battle.status import Status
 
 TINYBERT_SZ = 624
-EXTRA_SZ = 29
+EXTRA_SZ = 34
 # 1 field row + 1 info row + (for each pokemon (textA, textB, num) so 12 * 3) + 1 field num = 39
 # + 3 static history embeddings = 42
 OBS_DIM = (42, TINYBERT_SZ)

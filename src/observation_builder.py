@@ -27,27 +27,75 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tokenizer = BertTokenizerFast.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
 model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(device)  # type: ignore
 model.eval()
+# Pre-compiled constants and regexes for optimization
+CONDITION_DESC = {
+    -1: "This Pokemon is DROPPED. It is not part of the battle.",
+    0: "This pokemon MAY or MAY NOT be in the back as a switch.",
+    1: "This pokemon IS ACTIVE. It is currently on the field.",
+    2: "This pokemon is IN THE BACK. It is able to switch in.",
+    3: "This pokemon has FAINTED. It no longer participates in the battle.",
+    4: "This pokemon CANNOT BE SWITCHED IN. May or may not be in team.",
+}
+DEFAULT_CONDITION_DESC = "We do not know about this pokemon."
+
+# Regex patterns for _get_turn_summary
+MOVE_RE = re.compile(r"\|move\|([^|]+)\|([^|]+)")
+DAMAGE_RE = re.compile(r"\|-damage\|([^|]+)\|([^|]+)")
+FAINT_RE = re.compile(r"\|faint\|([^|]+)")
+STATUS_RE = re.compile(r"\|-status\|([^|]+)\|([^|]+)")
+BOOST_RE = re.compile(r"\|-(boost|unboost)\|([^|]+)\|([^|]+)\|([^|]+)")
+ABILITY_RE = re.compile(r"\|-ability\|([^|]+)\|([^|]+)")
+TERA_RE = re.compile(r"\|-terastallize\|([^|]+)\|([^|]+)")
+CLEAN_ID_RE = re.compile(r"[^a-z0-9]")
 
 
-def _get_pokemon_text(pokemon: Pokemon | None, cond: int) -> tuple[str, str]:
+def _to_id_str(s: str) -> str:
+    return CLEAN_ID_RE.sub("", s.lower())
+
+
+def _get_last_move(battle: DoubleBattle, pokemon: Pokemon) -> str | None:
+    # Check current turn's events first
+    for event in reversed(battle.current_observation.events):
+        if event[1] == "move":
+            try:
+                event_mon = battle.get_pokemon(event[2])
+                if event_mon == pokemon:
+                    move_name = event[3]
+                    return _to_id_str(move_name)
+            except Exception:
+                continue
+
+    # Check observations from previous turns
+    for turn in range(battle.turn, 0, -1):
+        if turn not in battle.observations:
+            continue
+        obs = battle.observations[turn]
+        for event in reversed(obs.events):
+            if event[1] == "move":
+                try:
+                    event_mon = battle.get_pokemon(event[2])
+                    if event_mon == pokemon:
+                        move_name = event[3]
+                        return _to_id_str(move_name)
+                except Exception:
+                    continue
+    return None
+
+
+def _get_turns_left(battle: DoubleBattle, start_turn: int, duration: int = 5) -> int:
+    if start_turn < 0:
+        return 0
+    return max(0, duration - (battle.turn - start_turn))
+
+
+def _get_pokemon_text(
+    pokemon: Pokemon | None, cond: int, last_move_id: str | None
+) -> tuple[str, str]:
     if pokemon is None:
         return "This slot is empty.", "No information available."
 
     # information about pokemon position
-    if cond == -1:
-        cond_str = "This Pokemon is DROPPED. It is not part of the battle."
-    elif cond == 0:
-        cond_str = "This pokemon MAY or MAY NOT be in the back as a switch."
-    elif cond == 1:
-        cond_str = "This pokemon IS ACTIVE. It is currently on the field."
-    elif cond == 2:
-        cond_str = "This pokemon is IN THE BACK. It is able to switch in."
-    elif cond == 3:
-        cond_str = "This pokemon has FAINTED. It no longer participates in the battle."
-    elif cond == 4:
-        cond_str = "This pokemon CANNOT BE SWITCHED IN. May or may not be in team."
-    else:
-        cond_str = "We do not know about this pokemon."
+    cond_str = CONDITION_DESC.get(cond, DEFAULT_CONDITION_DESC)
 
     movelist = list(pokemon.moves.keys())
     joint_movelist = ",".join(movelist)
@@ -55,24 +103,23 @@ def _get_pokemon_text(pokemon: Pokemon | None, cond: int) -> tuple[str, str]:
 
     pokemon_desc = POKEMON_DESCRIPTION.get(id, "Unknown Pokemon description.")
 
-    moves_desc = " ".join([move + ":" + MOVES.get(move, "No details.") for move in movelist])
+    moves_desc = " ".join([f"{m}:{MOVES.get(m, 'No details.')}" for m in movelist])
 
     item_desc = (
-        "Holds no item."
-        if (pokemon.item is None or pokemon.item == "" or pokemon.item not in ITEM_DESCRIPTION)
-        else ITEM_DESCRIPTION[pokemon.item]
+        ITEM_DESCRIPTION.get(pokemon.item, "Holds no item.")
+        if pokemon.item and pokemon.item in ITEM_DESCRIPTION
+        else "Holds no item."
     )
 
     status_desc = (
-        "No status condition." if pokemon.status is None else STATUS_DESCRIPTION[pokemon.status]
+        STATUS_DESCRIPTION.get(pokemon.status, "No status condition.")
+        if pokemon.status
+        else "No status condition."
     )
 
     def describe_effect(effect: Effect, turns: int) -> str:
-        effect_desc = EFFECT_DESCRIPTION.get(effect)
-        if effect_desc is not None:
-            return f"{effect_desc}. Has been active for {turns} turns."
-        else:
-            return ""
+        desc = EFFECT_DESCRIPTION.get(effect)
+        return f"{desc}. Has been active for {turns} turns." if desc else ""
 
     effect_desc = " ".join(
         [describe_effect(effect, turn) for effect, turn in pokemon.effects.items()]
@@ -84,8 +131,14 @@ def _get_pokemon_text(pokemon: Pokemon | None, cond: int) -> tuple[str, str]:
         else "Cannot use first turn only moves."
     )
 
-    first_half = cond_str + pokemon_desc + moves_desc
-    second_half = item_desc + status_desc + effect_desc + first_turn_in
+    last_move_desc = (
+        f" The last move this Pokemon used was {last_move_id}."
+        if last_move_id
+        else " This Pokemon has not used a move yet."
+    )
+
+    first_half = f"{cond_str}{pokemon_desc}{item_desc}{status_desc}{effect_desc}{first_turn_in}"
+    second_half = f"{moves_desc}{last_move_desc}"
 
     return first_half, second_half
 
@@ -102,8 +155,10 @@ def _get_pokemon_obs(
     3 = fainted
     4 = stuck out (dropped from own team / pokemon inside is trapped)
     """
+    last_move_id = _get_last_move(battle, pokemon) if pokemon and cond == 1 else None
+
     # Text input for each pokemon
-    pokemon_str = _get_pokemon_text(pokemon, cond)
+    pokemon_str = _get_pokemon_text(pokemon, cond, last_move_id)
 
     # Extra inputs for each pokemon (roughly normalized to [0,1])
     pokemon_row = [0.0] * EXTRA_SZ
@@ -139,6 +194,21 @@ def _get_pokemon_obs(
     pokemon_row[27] = pokemon.weight / 300.0  # heaviest pokemon is ursa bm at 330
     pokemon_row[28] = (orig_idx + 1) / 6.0  # Original team index (1-6) or 0 if unknown/opp
 
+    # one hot of last move used
+    if last_move_id and pokemon:
+        move_ids = list(pokemon.moves.keys())
+        if last_move_id in move_ids:
+            move_idx = move_ids.index(last_move_id)
+            if move_idx < 4:
+                pokemon_row[29 + move_idx] = 1.0
+            else:
+                pokemon_row[33] = 1.0
+        else:
+            pokemon_row[33] = 1.0
+    else:
+        pokemon_row[33] = 1.0
+    # index 33 is 1 if last move is not known (flinch, switch, etc)
+
     return pokemon_str, pokemon_row
 
 
@@ -149,149 +219,77 @@ def _get_ordered_pokemon(
     Returns a list of 6 (Pokemon, original_index) tuples.
     Order: Active Slot 0, Active Slot 1, Bench 0, Bench 1, Dropped 0, Dropped 1
     """
-    if is_opponent:
-        active = battle.opponent_active_pokemon
-        team = battle.opponent_team
-    else:
-        active = battle.active_pokemon
-        team = battle.team
+    active = battle.opponent_active_pokemon if is_opponent else battle.active_pokemon
+    team = battle.opponent_team if is_opponent else battle.team
 
-    # Identified slots
-    slot0 = active[0] if len(active) > 0 else None
+    slot0 = active[0] if active else None
     slot1 = active[1] if len(active) > 1 else None
-
-    assigned = set()
-    if slot0:
-        assigned.add(slot0)
-    if slot1:
-        assigned.add(slot1)
+    assigned = {slot0, slot1} - {None}
 
     def get_orig_idx(mon):
         if mon is None or is_opponent:
             return -1
+        # Map back to original team index
         for i, m in enumerate(battle.team.values()):
             if m == mon:
                 return i
         return -1
 
-    # Others in team
-    others = []
-    for i, mon in enumerate(team.values()):
-        if mon not in assigned:
-            others.append((mon, i if not is_opponent else -1))
-
-    bench = []
-    dropped = []
+    others = [(m, get_orig_idx(m)) for m in team.values() if m not in assigned]
+    bench, dropped = [], []
 
     if not is_opponent:
         possible_switches = {mon for switches in battle.available_switches for mon in switches}
         for mon, idx in others:
-            if mon.fainted or mon in possible_switches:
-                bench.append((mon, idx))
-            else:
-                dropped.append((mon, idx))
+            (bench if (mon.fainted or mon in possible_switches) else dropped).append((mon, idx))
     else:
-        # For opponent, revealed ones that are not active are "Bench"
-        # Since opponent_team only contains revealed ones, others are all benched/fainted
-        for mon, idx in others:
-            bench.append((mon, idx))
+        bench = others
 
     # Pad to exact sizes
-    while len(bench) < 2:
-        bench.append((None, -1))
-    bench = bench[:2]
-
-    while len(dropped) < 2:
-        dropped.append((None, -1))
-    dropped = dropped[:2]
+    bench = (bench + [(None, -1)] * 2)[:2]
+    dropped = (dropped + [(None, -1)] * 2)[:2]
 
     return [(slot0, get_orig_idx(slot0)), (slot1, get_orig_idx(slot1))] + bench + dropped
 
 
 def _get_team_obs(battle: DoubleBattle):
-    p1_mons = _get_ordered_pokemon(battle, is_opponent=False)
-    p2_mons = _get_ordered_pokemon(battle, is_opponent=True)
+    def process_mons(mons):
+        txt, arr = [], []
+        for i, (mon, idx) in enumerate(mons):
+            # 0=unknown, 1=active, 2=benched, 3=fainted, -1=dropped
+            if mon is None:
+                cond = 0
+            elif i < 2:
+                cond = 1
+            elif mon.fainted:
+                cond = 3
+            elif i < 4:
+                cond = 2
+            else:
+                cond = -1
+            t, a = _get_pokemon_obs(mon, battle, cond, idx)
+            txt.append(t)
+            arr.append(a)
+        return txt, arr
 
-    p1_txt, p1_arr = [], []
-    for i, (mon, idx) in enumerate(p1_mons):
-        if mon is None:
-            cond = 0
-        elif i < 2:
-            cond = 1
-        elif mon.fainted:
-            cond = 3
-        elif i < 4:
-            cond = 2
-        else:
-            cond = -1
-        t, a = _get_pokemon_obs(mon, battle, cond, idx)
-        p1_txt.append(t)
-        p1_arr.append(a)
-
-    p2_txt, p2_arr = [], []
-    for i, (mon, idx) in enumerate(p2_mons):
-        if mon is None:
-            cond = 0
-        elif i < 2:
-            cond = 1
-        elif mon.fainted:
-            cond = 3
-        elif i < 4:
-            cond = 2
-        else:
-            cond = -1
-        t, a = _get_pokemon_obs(mon, battle, cond, idx)
-        p2_txt.append(t)
-        p2_arr.append(a)
+    p1_txt, p1_arr = process_mons(_get_ordered_pokemon(battle, is_opponent=False))
+    p2_txt, p2_arr = process_mons(_get_ordered_pokemon(battle, is_opponent=True))
 
     return p1_txt, p1_arr, p2_txt, p2_arr
 
 
 def _get_locals(battle: DoubleBattle):
     """
-    For each side,
-    0 = trick room turns
-    1 = grassy terrain turns
-    2 = psychic terrain turns
-    3 = sun turns
-    4 = rain turns
-    5 = snow turns
-    6 = tailwind turns
-    7 = aurora veil turns
+    Returns turn remain counts for various field and side effects.
     """
-    p1_row = [0.0] * 8
-    p2_row = [0.0] * 8
-
     # Global effects
-    trick_room_turns = 0
-    grassy_terrain_turns = 0
-    psychic_terrain_turns = 0
-    if battle.fields:
-        grassy_terrain_start = battle.fields.get(Field.GRASSY_TERRAIN, -1)
-        psychic_terrain_start = battle.fields.get(Field.PSYCHIC_TERRAIN, -1)
-        trick_room_start = battle.fields.get(Field.TRICK_ROOM, -1)
+    trick_room_turns = _get_turns_left(battle, battle.fields.get(Field.TRICK_ROOM, -1))
+    grassy_terrain_turns = _get_turns_left(battle, battle.fields.get(Field.GRASSY_TERRAIN, -1))
+    psychic_terrain_turns = _get_turns_left(battle, battle.fields.get(Field.PSYCHIC_TERRAIN, -1))
 
-        if grassy_terrain_start >= 0:
-            grassy_terrain_turns = 5 - (battle.turn - grassy_terrain_start)
-        elif psychic_terrain_start >= 0:
-            psychic_terrain_turns = 5 - (battle.turn - psychic_terrain_start)
-
-        if trick_room_start >= 0:
-            trick_room_turns = 5 - (battle.turn - trick_room_start)
-
-    sun_turns = 0
-    rain_turns = 0
-    snow_turns = 0
-    if battle._weather:
-        rain_start = battle._weather.get(Weather.RAINDANCE, -1)
-        sun_start = battle._weather.get(Weather.SUNNYDAY, -1)
-        snow_start = battle._weather.get(Weather.SNOW, -1)
-        if rain_start >= 0:
-            rain_turns = 5 - (battle.turn - rain_start)
-        elif sun_start >= 0:
-            sun_turns = 5 - (battle.turn - sun_start)
-        elif snow_start >= 0:
-            snow_turns = 5 - (battle.turn - snow_start)
+    rain_turns = _get_turns_left(battle, battle._weather.get(Weather.RAINDANCE, -1))
+    sun_turns = _get_turns_left(battle, battle._weather.get(Weather.SUNNYDAY, -1))
+    snow_turns = _get_turns_left(battle, battle._weather.get(Weather.SNOW, -1))
 
     global_effects = [
         trick_room_turns,
@@ -301,35 +299,18 @@ def _get_locals(battle: DoubleBattle):
         rain_turns,
         snow_turns,
     ]
-    for i in range(6):
-        p1_row[i] = global_effects[i]
-        p2_row[i] = global_effects[i]
 
-    # Player 1 local effects
-    tailwind_turns = 0
-    veil_turns = 0
-    if battle.side_conditions:
-        tailwind_start = battle.side_conditions.get(SideCondition.TAILWIND, -1)
-        veil_start = battle.side_conditions.get(SideCondition.AURORA_VEIL, -1)
-        if tailwind_start >= 0:
-            tailwind_turns = 4 - (battle.turn - tailwind_start)
-        if veil_start >= 0:
-            veil_turns = 5 - (battle.turn - veil_start)
-    p1_row[6] = tailwind_turns
-    p1_row[7] = veil_turns
+    p1_row = global_effects + [
+        _get_turns_left(battle, battle.side_conditions.get(SideCondition.TAILWIND, -1), duration=4),
+        _get_turns_left(battle, battle.side_conditions.get(SideCondition.AURORA_VEIL, -1)),
+    ]
 
-    # Player 2 local effects
-    tailwind_turns = 0
-    veil_turns = 0
-    if battle.opponent_side_conditions:
-        tailwind_start = battle.opponent_side_conditions.get(SideCondition.TAILWIND, -1)
-        veil_start = battle.opponent_side_conditions.get(SideCondition.AURORA_VEIL, -1)
-        if tailwind_start >= 0:
-            tailwind_turns = 4 - (battle.turn - tailwind_start)
-        if veil_start >= 0:
-            veil_turns = 5 - (battle.turn - veil_start)
-    p2_row[6] = tailwind_turns
-    p2_row[7] = veil_turns
+    p2_row = global_effects + [
+        _get_turns_left(
+            battle, battle.opponent_side_conditions.get(SideCondition.TAILWIND, -1), duration=4
+        ),
+        _get_turns_left(battle, battle.opponent_side_conditions.get(SideCondition.AURORA_VEIL, -1)),
+    ]
 
     return p1_row, p2_row
 
@@ -360,18 +341,13 @@ def _get_field_text(battle: DoubleBattle) -> str:
     ]
 
     def describe_side(name_suffix, row):
-        parts = []
-        for name, turns in zip(effects, row):
-            if turns > 0:
-                parts.append(f"{name} active for {int(turns)} more turns")
-            else:
-                parts.append(f"{name} inactive")
-        return f"{name_suffix} has: " + ". ".join(parts)
+        parts = [
+            f"{name} active for {int(turns)} more turns" if turns > 0 else f"{name} inactive"
+            for name, turns in zip(effects, row)
+        ]
+        return f"{name_suffix} has: {'. '.join(parts)}"
 
-    p1_desc = describe_side("Player 1", p1_row)
-    p2_desc = describe_side("Player 2", p2_row)
-
-    return header + " " + p1_desc + ". " + p2_desc + "."
+    return f"{header} {describe_side('Player 1', p1_row)}. {describe_side('Player 2', p2_row)}."
 
 
 def _get_info_text(p1_tera: Pokemon | None, p2_tera: Pokemon | None) -> str:
@@ -420,60 +396,51 @@ def _get_turn_summary(battle: DoubleBattle, turn: int) -> str:
     if turn <= 0:
         return f"Turn {turn}: Battle has not started yet."
 
-    # In recent versions of poke-env, the battle log is accessible via battle._observations
-    # which is a dict[int, Observation] (previously dict[int, list[str]])
-    obs = getattr(battle, "_observations", {}).get(turn, [])
-
-    if not obs:
+    if turn not in battle.observations:
         return f"Turn {turn}: No information available."
 
-    if not isinstance(obs, list):
-        # In recent poke-env, obs is an Observation object
-        # its events property is List[List[str]] (split messages)
-        messages = ["|".join(e) for e in getattr(obs, "events", [])]
-    else:
-        # Compatibility with older poke-env where _observations was dict[int, list[str]]
-        messages = obs
+    obs = battle.observations[turn]
+    # events is List[List[str]]
+    messages = ["|".join(e) for e in obs.events]
 
     summary_parts = []
-    # Regex for common showdown messages
     for msg in messages:
-        if re.search(r"^\|move\|", msg):
-            match = re.search(r"\|move\|([^|]+)\|([^|]+)", msg)
+        if MOVE_RE.search(msg):
+            match = MOVE_RE.search(msg)
             if match:
                 pkm, move = match.groups()
                 summary_parts.append(f"{pkm} used {move}")
-        elif re.search(r"^\|-damage\|", msg):
-            match = re.search(r"\|-damage\|([^|]+)\|([^|]+)", msg)
+        elif DAMAGE_RE.search(msg):
+            match = DAMAGE_RE.search(msg)
             if match:
                 pkm, health = match.groups()
                 summary_parts.append(f"{pkm} took damage ({health})")
-        elif re.search(r"^\|faint\|", msg):
-            match = re.search(r"\|faint\|([^|]+)", msg)
+        elif FAINT_RE.search(msg):
+            match = FAINT_RE.search(msg)
             if match:
                 summary_parts.append(f"{match.group(1)} fainted")
-        elif re.search(r"^\|-status\|", msg):
-            match = re.search(r"\|-status\|([^|]+)\|([^|]+)", msg)
+        elif STATUS_RE.search(msg):
+            match = STATUS_RE.search(msg)
             if match:
                 summary_parts.append(f"{match.group(1)} was {match.group(2)}ed")
-        elif re.search(r"^\|-(boost|unboost)\|", msg):
-            match = re.search(r"\|-(boost|unboost)\|([^|]+)\|([^|]+)\|([^|]+)", msg)
+        elif BOOST_RE.search(msg):
+            match = BOOST_RE.search(msg)
             if match:
                 verb, pkm, stat, amount = match.groups()
                 summary_parts.append(f"{pkm}'s {stat} {verb}ed by {amount}")
-        elif re.search(r"^\|-ability\|", msg):
-            match = re.search(r"\|-ability\|([^|]+)\|([^|]+)", msg)
+        elif ABILITY_RE.search(msg):
+            match = ABILITY_RE.search(msg)
             if match:
                 summary_parts.append(f"{match.group(1)}'s {match.group(2)} activated")
-        elif re.search(r"^\|-terastallize\|", msg):
-            match = re.search(r"\|-terastallize\|([^|]+)\|([^|]+)", msg)
+        elif TERA_RE.search(msg):
+            match = TERA_RE.search(msg)
             if match:
                 summary_parts.append(f"{match.group(1)} terastallized to {match.group(2)}")
 
     if not summary_parts:
         return f"Turn {turn}: Ongoing actions."
 
-    return f"Turn {turn}: " + "; ".join(summary_parts[:10]) + "."
+    return f"Turn {turn}: {'; '.join(summary_parts[:10])}."
 
 
 def from_battle(battle: AbstractBattle):
@@ -498,14 +465,12 @@ def from_battle(battle: AbstractBattle):
 
     info_txt = _get_info_text(p1_tera, opp_tera)
 
-    h1_txt = _get_turn_summary(battle, battle.turn - 1)
-    h2_txt = _get_turn_summary(battle, battle.turn - 2)
-    h3_txt = _get_turn_summary(battle, battle.turn - 3)
+    # Summaries for the last 3 turns
+    hist_summaries = [_get_turn_summary(battle, battle.turn - i) for i in [1, 2, 3]]
 
     p1_field_nums, p2_field_nums = _get_locals(battle)
-    p1_tera_info = 0 if p1_tera is None else 1
-    p2_tera_info = 0 if opp_tera is None else 1
-    field_num_row_raw = torch.tensor([*p1_field_nums, p1_tera_info, *p2_field_nums, p2_tera_info])
+    tera_flags = [0 if p1_tera is None else 1, 0 if opp_tera is None else 1]
+    field_num_row_raw = torch.tensor([*p1_field_nums, tera_flags[0], *p2_field_nums, tera_flags[1]])
     field_num_row = torch.cat(
         [field_num_row_raw, torch.zeros(TINYBERT_SZ - len(field_num_row_raw))]
     )
@@ -514,8 +479,8 @@ def from_battle(battle: AbstractBattle):
     opp_flat = [text for pair in opp_txt_pairs for text in pair]  # 12
 
     text_emb = encode_texts(
-        [h1_txt, h2_txt, h3_txt, field_txt, info_txt, *p1_flat, *opp_flat]
-    )  # 1 + 1 + 3 + 12 + 12 = 29 tokens
+        [*hist_summaries, field_txt, info_txt, *p1_flat, *opp_flat]
+    )  # 3 + 1 + 1 + 12 + 12 = 29 tokens
 
     num_rows = torch.tensor(p1_arr + opp_arr)  # 6 + 6 = 12 rows
     num_emb = torch.cat([num_rows, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)  # 12 rows
