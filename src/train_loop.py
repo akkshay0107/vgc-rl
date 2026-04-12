@@ -73,8 +73,14 @@ def _create_teampreview_handler():
     if path is not None:
         path = Path(path)
     if path is not None and path.exists():
-        from teampreview_lsa import LSATeamPreviewModel
-        model = LSATeamPreviewModel.load(path)
+        from teampreview_supervised import SupervisedTeamPreviewModel, is_supervised_checkpoint
+
+        if is_supervised_checkpoint(path):
+            model = SupervisedTeamPreviewModel.load(path)
+        else:
+            from teampreview_lsa import LSATeamPreviewModel
+
+            model = LSATeamPreviewModel.load(path)
         return TeamPreviewHandler(model=model)
     return TeamPreviewHandler()
 

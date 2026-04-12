@@ -100,6 +100,18 @@ def _modify_mask(action_mask: torch.Tensor, action1):
 # which is random before the battle with the bot (although unnecessarily expensive)
 # this way I shouldn't be able to tell which opponent is of which
 # type before the game starts
+def opponent_heuristic_tag(opp: Player) -> str:
+    if isinstance(opp, FuzzyHeuristic):
+        return "fuzzy"
+    if isinstance(opp, SimpleHeuristicsPlayer):
+        return "simple_heuristic"
+    if isinstance(opp, MaxBasePowerPlayer):
+        return "max_bp"
+    if isinstance(opp, RandomPlayer):
+        return "random"
+    return "unknown"
+
+
 def get_opponent(fmt: str, team: Teambuilder) -> Player:
     name = "p" + uuid.uuid4().hex[:16]  # prevent off chance of no letters
     num = random.random()
@@ -174,9 +186,13 @@ class ReplayRecordingPlayer(Player, ABC):
         self.save_dir = save_dir
         self.episode_data = []
         self.save_lsa_logs = save_lsa_logs
-        self.expert_side = expert_side  
+        self.expert_side = expert_side
+        self._next_opponent_tag: str | None = None
         self._teampreview_samples: list = []
         self._pending_teampreview: dict | None = None
+
+    def set_next_opponent_tag(self, tag: str | None) -> None:
+        self._next_opponent_tag = tag
 
     def _save_episode_data(self):
         if not self.episode_data and not self._teampreview_samples:
@@ -204,6 +220,7 @@ class ReplayRecordingPlayer(Player, ABC):
                     s["p1_bring"], s["p1_lead"], s["p2_bring"], s["p2_lead"],
                     p1_won=s.get("p1_won", True),
                     expert_side=self.expert_side,
+                    opponent_heuristic=s.get("opponent_heuristic"),
                 )
                 log_path.write_text(log_text, encoding="utf-8")
             self._teampreview_samples = []
@@ -246,27 +263,32 @@ class ReplayRecordingPlayer(Player, ABC):
     async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
         pass
 
+    def _capture_teampreview_for_logs(self, battle: AbstractBattle, choice: str) -> None:
+        if not self.save_lsa_logs or not isinstance(battle, DoubleBattle):
+            return
+        try:
+            p1_species = _team_species_list(battle, our_side=True)
+            p2_species = _team_species_list(battle, our_side=False)
+            if len(p1_species) == 6 and len(p2_species) == 6 and choice.startswith("/team "):
+                digits = [int(c) for c in choice.replace("/team ", "").strip() if c.isdigit()][:4]
+                if len(digits) >= 4:
+                    bring_1based = tuple(digits)
+                    lead_1based = tuple(digits[:2])
+                    p1_bring = tuple(x - 1 for x in bring_1based)
+                    p1_lead = tuple(x - 1 for x in lead_1based)
+                    self._pending_teampreview = {
+                        "p1_species": p1_species,
+                        "p2_species": p2_species,
+                        "p1_bring": p1_bring,
+                        "p1_lead": p1_lead,
+                        "opponent_heuristic": self._next_opponent_tag,
+                    }
+        except Exception:
+            pass
+
     def teampreview(self, battle: AbstractBattle) -> str:
         choice = super().random_teampreview(battle)
-        if self.save_lsa_logs and isinstance(battle, DoubleBattle):
-            try:
-                p1_species = _team_species_list(battle, our_side=True)
-                p2_species = _team_species_list(battle, our_side=False)
-                if len(p1_species) == 6 and len(p2_species) == 6 and choice.startswith("/team "):
-                    digits = [int(c) for c in choice.replace("/team ", "").strip() if c.isdigit()][:4]
-                    if len(digits) >= 4:
-                        bring_1based = tuple(digits)
-                        lead_1based = tuple(digits[:2])
-                        p1_bring = tuple(x - 1 for x in bring_1based)
-                        p1_lead = tuple(x - 1 for x in lead_1based)
-                        self._pending_teampreview = {
-                            "p1_species": p1_species,
-                            "p2_species": p2_species,
-                            "p1_bring": p1_bring,
-                            "p1_lead": p1_lead,
-                        }
-            except Exception:
-                pass
+        self._capture_teampreview_for_logs(battle, choice)
         return choice
 
 
@@ -333,6 +355,11 @@ class StrategyRecordingPlayer(ReplayRecordingPlayer):
         # but we need them for the wrapper player itself.
         super().__init__(save_dir, *args, **kwargs)
         self.strategy_player = strategy_player
+
+    def teampreview(self, battle: AbstractBattle) -> str:
+        choice = self.strategy_player.teampreview(battle)
+        self._capture_teampreview_for_logs(battle, choice)
+        return choice
 
     async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
         order = self.strategy_player.choose_move(battle)
@@ -406,6 +433,7 @@ async def main():
             team=team,
             accept_open_team_sheet=True,
             max_concurrent_battles=1,
+            expert_side="p1",
         )
     elif args.sh:
         save_dir = "./replays/simple_heuristic"
@@ -426,6 +454,7 @@ async def main():
             team=team,
             accept_open_team_sheet=True,
             max_concurrent_battles=1,
+            expert_side="p1",
         )
     elif args.fuzzy:
         save_dir = "./replays/fuzzy_heuristic"
@@ -447,6 +476,7 @@ async def main():
             team=team,
             accept_open_team_sheet=True,
             max_concurrent_battles=1,
+            expert_side="p1",
         )
     else:
         return
@@ -455,6 +485,7 @@ async def main():
     for i in range(1, n_battles + 1):
         print(f"Battle {i}/{n_battles}")
         selected_opp = get_opponent(fmt, team)
+        player.set_next_opponent_tag(opponent_heuristic_tag(selected_opp))
         await player.battle_against(selected_opp, n_battles=1)
         await selected_opp.ps_client.stop_listening()
 

@@ -1,24 +1,11 @@
 import random
+from collections.abc import Callable
 from typing import Any
 
 from poke_env.battle import AbstractBattle, DoubleBattle
 
-try:
-    from teampreview_lsa import LSATeamPreviewModel
-except ImportError:
-    LSATeamPreviewModel = None 
-
-
-def team_species(battle: DoubleBattle, our_side: bool = True) -> list[str]:
-    team = battle.team if our_side else battle.opponent_team
-    out: list[str] = []
-    for mon in team.values():
-        name = getattr(mon, "species", None)
-        if name is not None and hasattr(name, "name"):
-            out.append(str(name.name))
-        else:
-            out.append(getattr(mon, "base_species", str(mon)))
-    return out
+from teampreview_document import team_species_list
+from teampreview_hybrid import fuse_teampreview
 
 
 class TeamPreviewHandler:
@@ -27,15 +14,16 @@ class TeamPreviewHandler:
         model: Any = None,
         *,
         temperature: float = 1.0,
+        deterministic: bool = False,
     ) -> None:
         self.model = model
         self.bring = 4
         self.lead = 2
         self.temperature = temperature
-        self._is_lsa = LSATeamPreviewModel is not None and isinstance(model, LSATeamPreviewModel)
+        self.deterministic = deterministic
 
-        if self.model is not None and self._is_lsa:
-            self.model.temperature = self.temperature  
+        if self.model is not None and hasattr(self.model, "temperature"):
+            self.model.temperature = self.temperature
 
     def select_team(self, battle: AbstractBattle) -> str:
         assert isinstance(battle, DoubleBattle)
@@ -52,6 +40,20 @@ class TeamPreviewHandler:
         ordered = lead_1_based + remaining
         return "/team " + "".join(str(i) for i in ordered)
 
+    def select_team_with_fuzzy_fallback(
+        self,
+        battle: AbstractBattle,
+        fuzzy_fn: Callable[[AbstractBattle], str],
+        *,
+        min_bring_similarity: float = 0.5,
+    ) -> str:
+        assert isinstance(battle, DoubleBattle)
+        fuzzy_cmd = fuzzy_fn(battle)
+        if self.model is None:
+            return fuzzy_cmd
+        model_cmd = self.select_team(battle)
+        return fuse_teampreview(fuzzy_cmd, model_cmd, min_bring_similarity=min_bring_similarity)
+
     def decide(self, battle: DoubleBattle) -> tuple[tuple[int, ...], tuple[int, ...]]:
         team_size = len(battle.team)
         if team_size <= 0:
@@ -60,10 +62,15 @@ class TeamPreviewHandler:
         bring_k = min(self.bring, team_size)
         lead_k = min(self.lead, bring_k)
 
-        if self._is_lsa:
-            our_species = team_species(battle, our_side=True)
-            opp_species = team_species(battle, our_side=False)
-            return self.model.decide_stochastic(  # type: ignore[union-attr]
+        if self.model is not None and callable(getattr(self.model, "decide_from_battle", None)):
+            return self.model.decide_from_battle(
+                battle, bring_k=bring_k, lead_k=lead_k, deterministic=self.deterministic
+            )
+
+        if self.model is not None:
+            our_species = team_species_list(battle, our_side=True)
+            opp_species = team_species_list(battle, our_side=False)
+            return self.model.decide_stochastic(
                 our_species, opp_species, team_size=team_size, bring_k=bring_k, lead_k=lead_k
             )
 
@@ -72,3 +79,7 @@ class TeamPreviewHandler:
         bring_tuple = tuple(members[:bring_k])
         lead_tuple = tuple(members[:lead_k])
         return bring_tuple, lead_tuple
+
+
+def team_species(battle: DoubleBattle, our_side: bool = True) -> list[str]:
+    return team_species_list(battle, our_side=our_side)

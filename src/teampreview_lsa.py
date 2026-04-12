@@ -148,16 +148,37 @@ class LSATeamPreviewModel:
         team_size: int = 6,
         bring_k: int = 4,
         lead_k: int = 2,
+        *,
+        document: str | None = None,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-       
         if not self.bring_labels or not self.lead_labels:
             indices = list(range(min(team_size, 6)))
             self.rng.shuffle(indices)
             bring = tuple(indices[:bring_k])
             lead = tuple(indices[:lead_k])
             return bring, lead
-        matchup = matchup_string(our_species, opp_species)
-        return self.sample_bring_lead(matchup, team_size, bring_k, lead_k)
+        doc = document if document is not None else matchup_string(our_species, opp_species)
+        return self.sample_bring_lead(doc, team_size, bring_k, lead_k)
+
+    def decide_from_battle(
+        self,
+        battle: Any,
+        bring_k: int = 4,
+        lead_k: int = 2,
+        *,
+        deterministic: bool = False,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        from poke_env.battle import DoubleBattle
+
+        from teampreview_document import team_species_list
+
+        _ = deterministic  # retrieval policy is always stochastic; flag kept for API parity
+        assert isinstance(battle, DoubleBattle)
+        our = team_species_list(battle, True)
+        opp = team_species_list(battle, False)
+        ts = len(battle.team)
+        doc = matchup_string(our, opp)
+        return self.sample_bring_lead(doc, ts, bring_k, lead_k)
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
