@@ -16,7 +16,6 @@ from lookups import (
     EXTRA_SZ,
     ITEM_DESCRIPTION,
     MOVES,
-    OBS_DIM,
     POKEMON,
     POKEMON_DESCRIPTION,
     STATUS_DESCRIPTION,
@@ -236,13 +235,22 @@ def _get_ordered_pokemon(
         return -1
 
     others = [(m, get_orig_idx(m)) for m in team.values() if m not in assigned]
-    bench, dropped = [], []
 
+    if battle.teampreview:
+        # During team preview, show all 6 in a flat list
+        res = others + [(None, -1)] * 6
+        return res[:6]
+
+    bench, dropped = [], []
     if not is_opponent:
         possible_switches = {mon for switches in battle.available_switches for mon in switches}
         for mon, idx in others:
-            (bench if (mon.fainted or mon in possible_switches) else dropped).append((mon, idx))
+            if mon.fainted or mon in possible_switches:
+                bench.append((mon, idx))
+            else:
+                dropped.append((mon, idx))
     else:
+        # For opponent during battle, we only ever see at most 2 benched pokemon in VGC
         bench = others
 
     # Pad to exact sizes
@@ -256,17 +264,16 @@ def _get_team_obs(battle: DoubleBattle):
     def process_mons(mons):
         txt, arr = [], []
         for i, (mon, idx) in enumerate(mons):
-            # 0=unknown, 1=active, 2=benched, 3=fainted, -1=dropped
             if mon is None:
                 cond = 0
+            elif battle.teampreview:
+                cond = 2
             elif i < 2:
                 cond = 1
             elif mon.fainted:
                 cond = 3
-            elif i < 4:
-                cond = 2
             else:
-                cond = -1
+                cond = 2 if i < 4 else -1
             t, a = _get_pokemon_obs(mon, battle, cond, idx)
             txt.append(t)
             arr.append(a)
@@ -445,8 +452,6 @@ def _get_turn_summary(battle: DoubleBattle, turn: int) -> str:
 
 def from_battle(battle: AbstractBattle):
     assert isinstance(battle, DoubleBattle)
-    if battle.teampreview:
-        return torch.rand(OBS_DIM, dtype=torch.float32)
 
     p1_txt_pairs, p1_arr, opp_txt_pairs, opp_arr = _get_team_obs(battle)
     field_txt = _get_field_text(battle)
@@ -470,7 +475,19 @@ def from_battle(battle: AbstractBattle):
 
     p1_field_nums, p2_field_nums = _get_locals(battle)
     tera_flags = [0 if p1_tera is None else 1, 0 if opp_tera is None else 1]
-    field_num_row_raw = torch.tensor([*p1_field_nums, tera_flags[0], *p2_field_nums, tera_flags[1]])
+
+    # 8 (p1 side) + 1 (p1 tera) + 8 (p2 side) + 1 (p2 tera) + 2 (teampreview one-hot) + 1 (turn) = 21 values
+    tp_one_hot = [1.0, 0.0] if battle.teampreview else [0.0, 1.0]
+    field_num_row_raw = torch.tensor(
+        [
+            *p1_field_nums,
+            tera_flags[0],
+            *p2_field_nums,
+            tera_flags[1],
+            *tp_one_hot,
+            battle.turn / 16.0,  # normalized turn count
+        ]
+    )
     field_num_row = torch.cat(
         [field_num_row_raw, torch.zeros(TINYBERT_SZ - len(field_num_row_raw))]
     )
@@ -490,6 +507,16 @@ def from_battle(battle: AbstractBattle):
 
 def get_action_mask(battle: AbstractBattle):
     assert isinstance(battle, DoubleBattle)
+    if battle.teampreview:
+        # Only allow distinct combinations (p1 < p2) to avoid redundant permutations
+        # action = (p1-1)*6 + (p2-1)
+        mask = [0] * ACT_SIZE
+        for a in range(36):
+            p1 = a // 6 + 1
+            p2 = a % 6 + 1
+            if p1 < p2 and p1 <= len(battle.team) and p2 <= len(battle.team):
+                mask[a] = 1
+        return torch.tensor([mask, mask], dtype=torch.uint8)
 
     def single_action_mask(battle: DoubleBattle, pos: int) -> list[int]:
         switch_space = [
@@ -503,7 +530,7 @@ def get_action_mask(battle: AbstractBattle):
             actions = [0]
         elif all(battle.force_switch) and len(battle.available_switches[pos]) == 1:
             actions = switch_space + [0]
-        elif battle.teampreview or active_mon is None:
+        elif active_mon is None:
             actions = switch_space
         else:
             move_spaces = [

@@ -76,6 +76,9 @@ class PolicyNet(nn.Module):
         if S != self.seq_len or F != self.feat_dim:
             raise ValueError(f"Got shape ({S}, {F}). Expected({self.seq_len}, {self.feat_dim})")
 
+        # Detect phase from observation flag (Row 41, Index 18)
+        is_tp = obs[:, 41, 18] > 0.5
+
         z, next_state = self.reducer(obs, state)
         x = self.shared_backbone(z)
 
@@ -93,8 +96,8 @@ class PolicyNet(nn.Module):
         action1 = cat1.sample()
         log_prob1 = cat1.log_prob(action1)
 
-        # Adjust logits for the second Pokemon to enforce mutual exclusivity with action1
-        logits = self._apply_sequential_masks(logits, action1, action_mask)
+        # Adjust logits for the second Pokemon
+        logits = self._apply_sequential_masks(logits, action1, action_mask, is_tp)
         cat2 = Categorical(logits=logits[:, 1])
         action2 = cat2.sample()
         log_prob2 = cat2.log_prob(action2)
@@ -114,15 +117,17 @@ class PolicyNet(nn.Module):
         action_mask: torch.Tensor | None,
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
     ):
-        # returns policy probs in log space assuming the given action
-        # returns log probs for the joint distribution
+        if obs.dim() == 2:
+            obs = obs.unsqueeze(0)
+        is_tp = obs[:, 41, 18] > 0.5
+
         policy_logits, _, _, _, _ = self(obs, state, action_mask, sample_actions=False)
 
         if action_mask is None:
             return policy_logits
 
         logits = self._apply_masks(policy_logits, action_mask)  # (B, 2, A)
-        logits = self._apply_sequential_masks(logits, action_taken[:, 0], action_mask)
+        logits = self._apply_sequential_masks(logits, action_taken[:, 0], action_mask, is_tp)
         return logits
 
     def evaluate_actions(
@@ -132,11 +137,15 @@ class PolicyNet(nn.Module):
         action_mask: torch.Tensor | None = None,
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        if obs.dim() == 2:
+            obs = obs.unsqueeze(0)
+        is_tp = obs[:, 41, 18] > 0.5
+
         policy_logits, _, _, value, next_state = self(obs, state, action_mask, sample_actions=False)
 
         if action_mask is not None:
             logits = self._apply_masks(policy_logits, action_mask)
-            logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask)
+            logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask, is_tp)
         else:
             logits = policy_logits
 
@@ -157,19 +166,33 @@ class PolicyNet(nn.Module):
         return logits.masked_fill(mask, float("-inf"))
 
     def _apply_sequential_masks(
-        self, logits: torch.Tensor, action1: torch.Tensor, action_mask: torch.Tensor
+        self,
+        logits: torch.Tensor,
+        action1: torch.Tensor,
+        action_mask: torch.Tensor,
+        is_tp: torch.Tensor,
     ):
-        mask2 = action_mask[:, 1].bool()  # using view of action mask
-        switch_mask = (1 <= action1) & (action1 <= 6)
-        tera_mask = (26 < action1) & (action1 <= 46)
-        pass_mask = action1 == 0
+        mask2 = action_mask[:, 1].clone().bool()
 
+        # Battle-specific constraints (only apply if not Team Preview)
         # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
+        switch_mask = (1 <= action1) & (action1 <= 6) & (~is_tp)
         mask2[switch_mask, action1[switch_mask]] = 0
-        # If Pokemon 1 uses terastallize in certain moves, Pokemon 2 cannot also tera in that range
+
+        # If Pokemon 1 uses terastallize, Pokemon 2 cannot also tera
+        tera_mask = (26 < action1) & (action1 <= 46) & (~is_tp)
         mask2[tera_mask, 27:47] = 0
+
         # If Pokemon 1 passes, Pokemon 2 cannot pass as well unless no valid moves left
+        pass_mask = (action1 == 0) & (~is_tp)
         mask2[pass_mask, 0] = 0
+
+        # Team Preview specific constraints (only apply if Team Preview)
+        # Avoid picking the exact same drafting combination for both Lead and Back
+        # (Though uniqueness is handled in env.py, masking it helps the model learn)
+        if is_tp.any():
+            tp_indices = torch.where(is_tp)[0]
+            mask2[tp_indices, action1[tp_indices]] = 0
 
         # If no valid action remains, force pass action to be valid for Pokemon 2
         no_valid = mask2.sum(-1) == 0

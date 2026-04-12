@@ -5,12 +5,14 @@ import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Awaitable
 
 import numpy as np
 import torch
 from poke_env import AccountConfiguration, LocalhostServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import (
+    BattleOrder,
     DefaultBattleOrder,
     MaxBasePowerPlayer,
     Player,
@@ -28,7 +30,33 @@ from teams import RandomTeamFromPool
 _TARGET_NAME = {-2: "pkm2", -1: "pkm1", 0: "empty", 1: "opp1", 2: "opp2"}
 
 
+def print_teampreview_actions(battle):
+    team = list(battle.team.values())
+    print("\n=== TEAM PREVIEW ===")
+    for i, mon in enumerate(team):
+        print(f"{i + 1}: {mon.species}")
+
+    print("\nActions (0-35) representing combinations {Mon1, Mon2}:")
+    valid_count = 0
+    for a in range(36):
+        p1 = a // 6 + 1
+        p2 = a % 6 + 1
+        if p1 < p2 and p1 <= len(team) and p2 <= len(team):
+            name1 = team[p1 - 1].species
+            name2 = team[p2 - 1].species
+            print(
+                f"{a:2}:{{{p1},{p2}}} {name1[:7]:7}&{name2[:7]:7}",
+                end=" | " if (valid_count + 1) % 3 != 0 else "\n",
+            )
+            valid_count += 1
+    print("\n(Note: Permutations like {2,1} are automatically mapped to {1,2})")
+
+
 def print_valid_actions_from_mask(battle, action_mask):
+    if battle.teampreview:
+        print_teampreview_actions(battle)
+        return
+
     m = action_mask
     if torch.is_tensor(m):
         m = m.detach().cpu().numpy()
@@ -96,12 +124,8 @@ def _modify_mask(action_mask: torch.Tensor, action1):
     return mask2
 
 
-# this function only exists to give each player a seperate name
-# which is random before the battle with the bot (although unnecessarily expensive)
-# this way I shouldn't be able to tell which opponent is of which
-# type before the game starts
 def get_opponent(fmt: str, team: Teambuilder) -> Player:
-    name = "p" + uuid.uuid4().hex[:16]  # prevent off chance of no letters
+    name = "p" + uuid.uuid4().hex[:16]
     num = random.random()
     if num < 0.35:
         return FuzzyHeuristic(
@@ -178,11 +202,25 @@ class ReplayRecordingPlayer(Player, ABC):
         self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
         return Gen9VGCEnv.action_to_order(action_np, battle)
 
+    async def _handle_battle_request(
+        self, battle: AbstractBattle, maybe_default_order: bool = False
+    ):
+        if battle.teampreview:
+            obs = self.get_observation(battle)
+            action_mask = observation_builder.get_action_mask(battle)
+            action_np = await self.get_action(battle, action_mask)
+            self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
+            order = Gen9VGCEnv.action_to_order(action_np, battle)
+            await self.ps_client.send_message(order.message, battle.battle_tag)
+        else:
+            await super()._handle_battle_request(battle, maybe_default_order)
+
     @abstractmethod
     async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
         pass
 
     def teampreview(self, battle: AbstractBattle) -> str:
+        # This is now handled in _handle_battle_request to allow recording
         return super().random_teampreview(battle)
 
 
@@ -215,24 +253,22 @@ class TerminalPlayer(ReplayRecordingPlayer):
                 )
                 continue
 
-            # Check for mutual exclusivity
-            # Both switching to same slot
+            if battle.teampreview:
+                return np.asarray(action, dtype=np.int64)
+
             if (1 <= action1 <= 6) and action1 == action2:
                 print(
                     "Error: Mutually exclusive actions selected. Both pokemon cannot switch to the same slot. Re-input your two choices."
                 )
                 continue
 
-            # Both terastallizing
             if (27 <= action1 <= 46) and (27 <= action2 <= 46):
                 print(
                     "Error: Mutually exclusive actions selected. Both pokemon cannot terastallize. Re-input your two choices."
                 )
                 continue
 
-            # Both passing
             if action1 == 0 and action2 == 0:
-                # check if there are any other valid moves for action2
                 m2 = _modify_mask(action_mask_cpu, action1)
                 if not m2[action2]:
                     print(
@@ -245,28 +281,39 @@ class TerminalPlayer(ReplayRecordingPlayer):
 
 class StrategyRecordingPlayer(ReplayRecordingPlayer):
     def __init__(self, strategy_player: Player, save_dir, *args, **kwargs):
-        # We don't need to pass all args to strategy_player if it's already initialized
-        # but we need them for the wrapper player itself.
         super().__init__(save_dir, *args, **kwargs)
         self.strategy_player = strategy_player
 
     async def get_action(self, battle: DoubleBattle, action_mask: torch.Tensor) -> np.ndarray:
-        order = self.strategy_player.choose_move(battle)
-        action = Gen9VGCEnv.order_to_action(order, battle, fake=True, strict=False)  # type: ignore
+        if battle.teampreview:
+            res = self.strategy_player.teampreview(battle)
+            if isinstance(res, Awaitable):
+                res = await res
+            order = SingleBattleOrder(res)
+        else:
+            order = self.strategy_player.choose_move(battle)
+            if isinstance(order, Awaitable):
+                order = await order
 
-        if action[0] < 0:
-            action[0] = 0
-        if not action_mask[0, action[0]]:
-            valid_indices = torch.where(action_mask[0])[0]
-            action[0] = valid_indices[0].item()
+        action = Gen9VGCEnv.order_to_action(order, battle, fake=True, strict=False)
 
-        mask2 = _modify_mask(action_mask, action[0])
+        if not battle.teampreview:
+            if action[0] < 0:
+                action[0] = 0
+            if not action_mask[0, action[0]]:
+                valid_indices = torch.where(action_mask[0])[0]
+                action[0] = valid_indices[0].item()
 
-        if action[1] < 0:
-            action[1] = 0
-        if not mask2[action[1]]:
-            valid_indices = torch.where(mask2)[0]
-            action[1] = valid_indices[0].item()
+            mask2 = _modify_mask(action_mask, action[0])
+
+            if action[1] < 0:
+                action[1] = 0
+            if not mask2[action[1]]:
+                valid_indices = torch.where(mask2)[0]
+                action[1] = valid_indices[0].item()
+        else:
+            action[0] = np.clip(action[0], 0, 35)
+            action[1] = np.clip(action[1], 0, 35)
 
         return action
 
@@ -375,7 +422,6 @@ async def main():
 
         player._save_episode_data()
 
-    # Cleanup and save session (handles any remaining battles for mbp/sh)
     player._save_episode_data()
     await player.ps_client.stop_listening()
 

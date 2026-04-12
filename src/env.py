@@ -1,11 +1,12 @@
 from pathlib import Path
 from typing import Optional, Union
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import numpy.typing as npt
 from gymnasium.spaces import MultiDiscrete
 from poke_env.battle import AbstractBattle, DoubleBattle, Pokemon
-from poke_env.environment.env import ObsType, PokeEnv
+from poke_env.environment.env import ObsType, PokeEnv, _EnvPlayer
 from poke_env.player.battle_order import (
     BattleOrder,
     DefaultBattleOrder,
@@ -25,6 +26,18 @@ from poke_env.teambuilder import Teambuilder
 import observation_builder
 from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
+
+
+class VGCEnvPlayer(_EnvPlayer):
+    async def _handle_battle_request(
+        self, battle: AbstractBattle, maybe_default_order: bool = False
+    ):
+        if battle.teampreview:
+            await self.battle_queue.async_put(battle)
+            order = await self.order_queue.async_get()
+            await self.ps_client.send_message(order.message, battle.battle_tag)
+        else:
+            await super()._handle_battle_request(battle, maybe_default_order)
 
 
 # modified Gen9VGCEnv from poke-env
@@ -50,12 +63,14 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         fake: bool = False,
         strict: bool = True,
     ):
-        super().__init__(
-            account_configuration1=account_configuration1,
-            account_configuration2=account_configuration2,
+        self._challenge_timeout = challenge_timeout
+        self.agent1 = VGCEnvPlayer(
+            account_configuration=account_configuration1
+            or AccountConfiguration.generate(self.__class__.__name__, rand=True),
             avatar=avatar,
             battle_format=battle_format,
             log_level=log_level,
+            max_concurrent_battles=1,
             save_replays=save_replays,
             server_configuration=server_configuration,
             accept_open_team_sheet=accept_open_team_sheet,
@@ -64,11 +79,37 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
             open_timeout=open_timeout,
             ping_interval=ping_interval,
             ping_timeout=ping_timeout,
-            challenge_timeout=challenge_timeout,
             team=team,
-            fake=fake,
-            strict=strict,
         )
+        self.agent2 = VGCEnvPlayer(
+            account_configuration=account_configuration2
+            or AccountConfiguration.generate(self.__class__.__name__, rand=True),
+            avatar=avatar,
+            battle_format=battle_format,
+            log_level=log_level,
+            max_concurrent_battles=1,
+            save_replays=save_replays,
+            server_configuration=server_configuration,
+            accept_open_team_sheet=accept_open_team_sheet,
+            start_timer_on_battle_start=start_timer_on_battle_start,
+            start_listening=start_listening,
+            open_timeout=open_timeout,
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+            team=team,
+        )
+        self.agents: list[str] = []
+        self.possible_agents = [self.agent1.username, self.agent2.username]
+        self.battle1: Optional[AbstractBattle] = None
+        self.battle2: Optional[AbstractBattle] = None
+        self.agent1_to_move = False
+        self.agent2_to_move = False
+        self.fake = fake
+        self.strict = strict
+        self._np_random: Optional[np.random.Generator] = None
+        self._reward_buffer: WeakKeyDictionary[AbstractBattle, float] = WeakKeyDictionary()
+        self._challenge_task = None
+
         self.action_spaces = {
             agent: MultiDiscrete([ACT_SIZE, ACT_SIZE]) for agent in self.possible_agents
         }
@@ -119,6 +160,24 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         :rtype: BattleOrder
 
         """
+        if battle.teampreview:
+            p1 = action[0] // 6 + 1
+            p2 = action[0] % 6 + 1
+            p3 = action[1] // 6 + 1
+            p4 = action[1] % 6 + 1
+
+            selection = [p1, p2, p3, p4]
+            seen = []
+            final_selection = []
+            for p in selection:
+                if p not in seen and 1 <= p <= len(battle.team):
+                    final_selection.append(p)
+                    seen.append(p)
+            for i in range(1, len(battle.team) + 1):
+                if i not in seen:
+                    final_selection.append(i)
+            return SingleBattleOrder("/team " + "".join(map(str, final_selection)))
+
         if action[0] == -2 and action[1] == -2:
             return DefaultBattleOrder()
         elif action[0] == -1 or action[1] == -1:
@@ -226,6 +285,27 @@ class Gen9VGCEnv(PokeEnv[ObsType, npt.NDArray[np.int64]]):
         :return: The action for the given battle order in context of the current battle.
         :rtype: ndarray[int64]
         """
+        if battle.teampreview:
+            msg = order.message[6:]
+            msg = "".join(c for c in msg if c.isdigit())
+            p1 = int(msg[0]) if len(msg) > 0 else 1
+            p2 = int(msg[1]) if len(msg) > 1 else 2
+            p3 = int(msg[2]) if len(msg) > 2 else 3
+            p4 = int(msg[3]) if len(msg) > 3 else 4
+
+            # Canonicalize: sort pairs to match the p1 < p2 mask
+            # For Leads (Action 0)
+            l1, l2 = min(p1, p2), max(p1, p2)
+            if l1 == l2:
+                l2 = (l1 % 6) + 1
+
+            # For Back (Action 1)
+            b1, b2 = min(p3, p4), max(p3, p4)
+            if b1 == b2:
+                b2 = (b1 % 6) + 1
+
+            return np.array([(l1 - 1) * 6 + (l2 - 1), (b1 - 1) * 6 + (b2 - 1)], dtype=np.int64)
+
         if isinstance(order, DefaultBattleOrder):
             return np.array([-2, -2])
         elif isinstance(order, ForfeitBattleOrder):

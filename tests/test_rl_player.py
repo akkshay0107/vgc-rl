@@ -45,17 +45,16 @@ async def main():
     fmt = "gen9vgc2025regh"
     tp_handler = TeamPreviewHandler()
 
+    rl_policy = PolicyNet()
     ppo_checkpoint_path = root_dir / "checkpoints" / "ppo_checkpoint.pt"
 
-    if not ppo_checkpoint_path.exists():
-        print(f"Error: PPO Checkpoint not found at {ppo_checkpoint_path}.")
-        print("Please ensure you have trained the PPO model first.")
-        return
-
-    print(f"Loading PPO Policy from {ppo_checkpoint_path}...")
-    ppo_checkpoint = torch.load(ppo_checkpoint_path, weights_only=False, map_location="cpu")
-    rl_policy = PolicyNet()
-    rl_policy.load_state_dict(ppo_checkpoint["model_state_dict"])
+    if ppo_checkpoint_path.exists():
+        print(f"Loading PPO Policy from {ppo_checkpoint_path}...")
+        ppo_checkpoint = torch.load(ppo_checkpoint_path, weights_only=False, map_location="cpu")
+        rl_policy.load_state_dict(ppo_checkpoint["model_state_dict"])
+    else:
+        print(f"Warning: PPO Checkpoint not found at {ppo_checkpoint_path}.")
+        print("Running with a randomly initialized model.")
 
     rl_player = RLPlayer(
         policy=rl_policy,

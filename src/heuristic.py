@@ -1,4 +1,5 @@
 import copy
+import itertools
 import re
 
 import numpy as np
@@ -103,6 +104,42 @@ class FuzzyHeuristic(Player):
     OPPONENT_TARGETED = {"taunt", "encore", "yawn"}
     ALLY_TARGETED = {"helpinghand", "followme", "ragepowder", "wideguard", "coaching"}
 
+    # for team preview heuristics
+    TEAM_CORES = {
+        "basculegion": {"gholdengo", "dragonite"},  # DUG core
+        "hatterene": {"hatterene", "indeedee-f"},  # TR setters
+        "annihilape": {"annihilape", "maushold-four"},  # Beat Up + Rage Fist core
+        "pelipper": {"archaludon", "pelipper"},  # rain core
+        "ninetales-alola": {"gholdengo", "rillaboom"},  # grassy seed
+        "kingambit": {"volcarona", "clefable"},  # quiver dance + follow me
+    }
+
+    LEAD_BIAS = {
+        "incineroar": 0.5,  # fake-out + intimidate
+        "rillaboom": 0.4,  # fake-out + terrain
+        "maushold": 0.3,  # follow-me + taunt
+        "indeedee-f": 0.4,  # psychic surge + follow-me + TR
+        "hatterene": 0.2,  # TR setter
+        "gallade": 0.1,  # TR setter
+        "whimsicott": 0.4,  # prankster tailwind lead
+        "pelipper": 0.25,  #  rain setter
+        "ninetales-alola": 0.25,  # snow + aurora veil lead
+        "arcanine-hisui": 0.3,  # intimidate
+        "clefable": 0.2,  # follow-me support
+        "sneasler": 0.3,  # fake-out
+        "ursaluna": -0.2,  # TR abuser, prefers back slot
+        "ursaluna-bloodmoon": -0.1,
+        "kingambit": -0.2,
+        "volcarona": 0.2,
+        "gholdengo": 0.2,
+        "basculegion": -0.2,  # last respects sweeping
+        "dondozo": -0.3,
+        "annihilape": 0.1,  # can lead or back
+        "archaludon": 0.1,
+        "torkoal": 0.2,  # slowest setter but valid as back in TR
+        "dragonite": 0.0,
+    }
+
     def __init__(self, k: int = 4, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.k = k
@@ -137,6 +174,12 @@ class FuzzyHeuristic(Player):
     def _safe_boost(mon: Pokemon, stat: str, default: int = 0) -> int:
         return mon.boosts.get(stat, default) if mon.boosts else default
 
+    @staticmethod
+    def _safe_hp_fraction(mon: Pokemon) -> float:
+        if mon.current_hp is None or mon.max_hp is None or mon.max_hp <= 0:
+            return 1.0
+        return mon.current_hp / mon.max_hp
+
     def _calculate_damage(
         self,
         move: Move,
@@ -153,12 +196,11 @@ class FuzzyHeuristic(Player):
             if type_mult == 0:
                 return 0.0
 
-            max_hp_val = defender.max_hp if (defender.max_hp and defender.max_hp > 0) else 100
-            return 0.5 * (defender.current_hp / max_hp_val)
+            return 0.5 * self._safe_hp_fraction(defender)
 
         power = move.base_power
         if move.id in ["eruption", "waterspout"]:
-            power = 150 * (attacker.current_hp / attacker.max_hp)
+            power = 150 * self._safe_hp_fraction(attacker)
             is_slower = self._is_slower_than_opponents(battle, attacker)
             tr_active = self._trickroom_turns(battle) > 0
             if (is_slower and not tr_active) or (not is_slower and tr_active):
@@ -224,8 +266,7 @@ class FuzzyHeuristic(Player):
             if attacker.ability != "guts" and move.id != "facade":
                 damage *= 0.5
 
-        max_hp = defender.max_hp if (defender.max_hp and defender.max_hp > 0) else 100
-        return damage / max_hp
+        return damage / (defender.max_hp if (defender.max_hp and defender.max_hp > 0) else 100)
 
     def _get_accuracy(
         self, move: Move, attacker: Pokemon, defender: Pokemon, battle: DoubleBattle
@@ -963,6 +1004,167 @@ class FuzzyHeuristic(Player):
         o0 = Gen9VGCEnv._action_to_order_individual(chosen_pair[0], battle, fake=False, pos=0)
         o1 = Gen9VGCEnv._action_to_order_individual(chosen_pair[1], battle, fake=False, pos=1)
         return DoubleBattleOrder(o0, o1)
+
+    def teampreview(self, battle: AbstractBattle) -> str:
+        our_mons = list(battle.team.values())
+        opp_mons = list(battle.opponent_team.values())
+
+        bring4 = self._preview_select_bring4(our_mons, opp_mons, battle)
+        lead2, back2 = self._preview_select_leads(bring4, opp_mons, battle)
+
+        benched = [m for m in our_mons if m not in bring4]
+        ordered = lead2 + back2 + benched
+
+        # poke-env stores team as an ordered dict, recover 1-based positions
+        keys = list(battle.team.keys())
+        mon_to_idx = {battle.team[k]: i + 1 for i, k in enumerate(keys)}
+        return "/team " + "".join(str(mon_to_idx[m]) for m in ordered)
+
+    def _preview_select_bring4(
+        self, our_mons: list[Pokemon], opp_mons: list[Pokemon], battle: AbstractBattle
+    ) -> list[Pokemon]:
+        # Identify which team we are by checking for the unique anchor species
+        core = self._identify_core(our_mons)
+
+        # Score every mon vs. the opponent roster
+        scores = {m: self._preview_mon_score(m, opp_mons, battle) for m in our_mons}
+
+        # Lock core pair first, then fill by score
+        must = [m for m in our_mons if m.species in core]
+        rest = sorted(
+            [m for m in our_mons if m not in must],
+            key=lambda m: scores[m],
+            reverse=True,
+        )
+        return (must + rest)[:4]
+
+    def _identify_core(self, our_mons: list[Pokemon]) -> set[str]:
+        species = {m.species for m in our_mons}
+        for anchor, core_set in self.TEAM_CORES.items():
+            if anchor in species:
+                return core_set
+        return set()
+
+    def _preview_mon_score(
+        self, mon: Pokemon, opp_mons: list[Pokemon], battle: AbstractBattle
+    ) -> float:
+        score = 0.0
+        for opp in opp_mons:
+            score += self._preview_coverage(mon, opp, battle)
+            score += self._preview_bulk(mon, opp, battle)
+        return score
+
+    def _preview_coverage(self, mon: Pokemon, opp: Pokemon, battle: AbstractBattle) -> float:
+        best = 0.0
+        for move in mon.moves.values():
+            if move.category == MoveCategory.STATUS:
+                continue
+
+            val = self._calculate_damage(move, mon, opp, battle)  # type: ignore
+            if val > best:
+                best = val
+
+        # Spread moves hit both opponents — small bonus
+        if any(m.id in self.SPREAD for m in mon.moves.values()):
+            best *= 1.1
+        return best * 0.35
+
+    def _preview_bulk(self, mon: Pokemon, opp: Pokemon, battle: AbstractBattle) -> float:
+        worst = 0.0
+        for move in opp.moves.values():
+            if move.category == MoveCategory.STATUS:
+                continue
+
+            val = self._calculate_damage(move, opp, mon, battle)  # type: ignore
+            worst = max(worst, val)
+
+        return (2.0 - worst) * 0.2
+
+    def _preview_select_leads(
+        self, bring4: list[Pokemon], opp_mons: list[Pokemon], battle: AbstractBattle
+    ) -> tuple[list[Pokemon], list[Pokemon]]:
+        best_score = float("-inf")
+        best_pair = bring4[:2]
+
+        for pair in itertools.combinations(bring4, 2):
+            s = self._preview_lead_score(list(pair), opp_mons, battle)
+            if s > best_score:
+                best_score = s
+                best_pair = list(pair)
+
+        backs = [m for m in bring4 if m not in best_pair]
+        return list(best_pair), backs
+
+    def _preview_lead_score(
+        self, pair: list[Pokemon], opp_mons: list[Pokemon], battle: AbstractBattle
+    ) -> float:
+        p0, p1 = pair
+        score = 0.0
+
+        mv0 = set(m.id for m in p0.moves.values())
+        mv1 = set(m.id for m in p1.moves.values())
+
+        fakeout0 = "fakeout" in mv0
+        fakeout1 = "fakeout" in mv1
+        tr0 = "trickroom" in mv0
+        tr1 = "trickroom" in mv1
+        setup0 = bool(self.SETUP & mv0)
+        setup1 = bool(self.SETUP & mv1)
+        redir0 = bool(self.REDIRECTION & mv0)
+        redir1 = bool(self.REDIRECTION & mv1)
+        speed0 = bool(self.SPEED_CONTROL & mv0)
+        speed1 = bool(self.SPEED_CONTROL & mv1)
+
+        if (fakeout0 and tr1) or (fakeout1 and tr0):
+            score += 0.8
+        if (fakeout0 and setup1) or (fakeout1 and setup0):
+            score += 0.6
+        if (redir0 and tr1) or (redir1 and tr0):
+            score += 0.8
+        if (redir0 and setup1) or (redir1 and setup0):
+            score += 0.6
+        if speed0 or speed1:
+            score += 0.25
+
+        # Weather / terrain setters want to lead
+        if (
+            p0.ability in self.WEATHER_ABILITIES.values()
+            or p0.ability in self.TERRAIN_ABILITIES.values()
+        ):
+            score += 0.4
+        if (
+            p1.ability in self.WEATHER_ABILITIES.values()
+            or p1.ability in self.TERRAIN_ABILITIES.values()
+        ):
+            score += 0.4
+
+        # Intimidate into physical-leaning opponents
+        phys_opp = sum(
+            1 for o in opp_mons if self._safe_stat(o, "atk") >= self._safe_stat(o, "spa")
+        )
+        if p0.ability == "intimidate":
+            score += 0.15 * phys_opp
+        if p1.ability == "intimidate":
+            score += 0.15 * phys_opp
+
+        for i, opp in enumerate(opp_mons):
+            weight = 0.5 if i < 2 else 0.25
+            pair_best = max(
+                self._preview_coverage(p0, opp, battle),
+                self._preview_coverage(p1, opp, battle),
+            )
+            score += pair_best * weight
+
+        score += self.LEAD_BIAS.get(p0.species, 0.0)
+        score += self.LEAD_BIAS.get(p1.species, 0.0)
+
+        if tr0 and tr1:
+            score -= 0.5
+
+        if redir0 and redir1:
+            score -= 0.4
+
+        return score
 
     @staticmethod
     def _to_id_str(s: str) -> str:
