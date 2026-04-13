@@ -81,10 +81,12 @@ def _get_last_move(battle: DoubleBattle, pokemon: Pokemon) -> str | None:
     return None
 
 
-def _get_turns_left(battle: DoubleBattle, start_turn: int, duration: int = 5) -> int:
+def _get_turns_left(battle: DoubleBattle, start_turn: int, duration: int = 5) -> float:
+    # normalized turns left
     if start_turn < 0:
         return 0
-    return max(0, duration - (battle.turn - start_turn))
+    val = max(0, duration - (battle.turn - start_turn))
+    return val / float(duration)
 
 
 def _get_pokemon_text(
@@ -181,14 +183,15 @@ def _get_pokemon_obs(
     for i, move in enumerate(pokemon.moves):
         pokemon_row[17 + i] = pokemon.moves[move].current_pp / pokemon.moves[move].max_pp
 
-    pokemon_row[21] = pokemon.protect_counter / 3.0
+    # 0.1% to get a protect counter of 4 (anything above is nearly impossible)
+    pokemon_row[21] = pokemon.protect_counter / 4.0
 
     pokemon_row[22] = float(pokemon.first_turn)
     curr_effects = pokemon.effects
     pokemon_row[23] = curr_effects.get(Effect.TAUNT, 0) / 3.0
     pokemon_row[24] = curr_effects.get(Effect.ENCORE, 0) / 3.0
     pokemon_row[25] = 1.0 if Effect.CONFUSION in curr_effects else 0.0
-    pokemon_row[26] = curr_effects.get(Effect.YAWN, 0)
+    pokemon_row[26] = curr_effects.get(Effect.YAWN, 0) / 2.0
 
     pokemon_row[27] = pokemon.weight / 300.0  # heaviest pokemon is ursa bm at 330
     pokemon_row[28] = (orig_idx + 1) / 6.0  # Original team index (1-6) or 0 if unknown/opp

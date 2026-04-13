@@ -12,12 +12,12 @@ import torch
 from poke_env import AccountConfiguration, LocalhostServerConfiguration
 from poke_env.battle import AbstractBattle, DoubleBattle
 from poke_env.player import (
-    BattleOrder,
     DefaultBattleOrder,
     MaxBasePowerPlayer,
     Player,
     RandomPlayer,
     SimpleHeuristicsPlayer,
+    SingleBattleOrder,
 )
 from poke_env.teambuilder import Teambuilder
 
@@ -199,7 +199,9 @@ class ReplayRecordingPlayer(Player, ABC):
         action_mask = observation_builder.get_action_mask(battle)
 
         action_np = await self.get_action(battle, action_mask)
-        self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
+        self.episode_data.append(
+            {"obs": obs, "mask": action_mask, "action": torch.from_numpy(action_np)}
+        )
         return Gen9VGCEnv.action_to_order(action_np, battle)
 
     async def _handle_battle_request(
@@ -209,7 +211,9 @@ class ReplayRecordingPlayer(Player, ABC):
             obs = self.get_observation(battle)
             action_mask = observation_builder.get_action_mask(battle)
             action_np = await self.get_action(battle, action_mask)
-            self.episode_data.append({"obs": obs, "mask": action_mask, "action": action_np})
+            self.episode_data.append(
+                {"obs": obs, "mask": action_mask, "action": torch.from_numpy(action_np)}
+            )
             order = Gen9VGCEnv.action_to_order(action_np, battle)
             await self.ps_client.send_message(order.message, battle.battle_tag)
         else:

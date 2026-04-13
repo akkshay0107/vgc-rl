@@ -31,6 +31,8 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     target_kl: float = 0.015
     ppo_epochs: int = 4
+    warmup_episodes: int = 20
+    min_lr: float = 1e-6
 
     checkpoint_path: Path = Path(__file__).parent.parent / "checkpoints" / "ppo_checkpoint.pt"
     pool_dir: Path = Path(__file__).parent.parent / "checkpoints" / "pool"
