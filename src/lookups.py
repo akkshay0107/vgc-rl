@@ -4,11 +4,11 @@ from pathlib import Path
 from poke_env.battle.effect import Effect
 from poke_env.battle.status import Status
 
-# Observation dimensions: (sequence_length, feature_dim)
-# 1 field row + 1 info row + 3 tokens * 12 pokemon = 38
 TINYBERT_SZ = 624
-EXTRA_SZ = 29
-OBS_DIM = (39, TINYBERT_SZ)
+EXTRA_SZ = 34
+# 1 field row + 1 info row + (for each pokemon (textA, textB, num) so 12 * 3) + 1 field num = 39
+# + 3 static history embeddings = 42
+OBS_DIM = (42, TINYBERT_SZ)
 
 # Action space parameters
 NUM_SWITCHES = 6

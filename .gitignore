@@ -18,9 +18,13 @@ wheels/
 !.gitignore
 
 # Checkpoints
-checkpoints/*
+checkpoints/
 ppo_best_checkpoint.pt
 
 # Replays
-replays/*
-test_replays/*
+replays/
+test_replays/
+
+# Training logs + tensorboard
+runs/
+*.log

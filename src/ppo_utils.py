@@ -11,22 +11,28 @@ from lookups import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 
 
+def unwrap_policy(policy: PolicyNet) -> PolicyNet:
+    return getattr(policy, "_orig_mod", policy)
+
+
 @dataclass
 class PPOConfig:
-    num_episodes: int = 10
+    num_episodes: int = int(1e5)
     n_jobs: int = 2
-    rollouts_per_episode: int = 64
+    rollouts_per_episode: int = 128
 
     gamma: float = 0.96  # effective horizon = ~25 turns
     gae_lambda: float = 0.98  # sparse reward counteraction
-    lr: float = 1e-4
-    batch_size: int = 64
+    lr: float = 1e-5
+    batch_size: int = 32
     clip_range: float = 0.2
     entropy_coef: float = 0.01
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
-    target_kl: float = 0.015
+    target_kl: float = 0.01
     ppo_epochs: int = 4
+    warmup_episodes: int = 20
+    min_lr: float = 1e-6
 
     checkpoint_path: Path = Path(__file__).parent.parent / "checkpoints" / "ppo_checkpoint.pt"
     pool_dir: Path = Path(__file__).parent.parent / "checkpoints" / "pool"
@@ -38,8 +44,7 @@ class PPOConfig:
     min_pool_win_rate_weight: float = 0.1
     pool_cache_size: int = 5
     self_play_prob: float = 0.5
-    # Optional path to LSA. Both agents use it for teampreview if true.
-    teampreview_lsa_path: Optional[Path] = None
+    compile_policy: bool = False
 
 
 class RolloutBuffer:
@@ -47,66 +52,60 @@ class RolloutBuffer:
         self.reset()
 
     def reset(self):
-        self.obs = []
-        self.actions = []
-        self.log_probs = []
-        self.values = []
-        self.rewards = []
-        self.dones = []
-        self.action_masks = []
+        self.trajectories: list[list[dict]] = []
 
-    def add(self, data: dict):
-        # make sure all the data on the cpu beforehand
-        # pin memory when using gpus
-        self.obs.append(data["obs"])
-        self.actions.append(data["actions"])
-        self.log_probs.append(data["log_probs"])
-        self.values.append(data["values"])
-        self.rewards.append(data["rewards"])
-        self.dones.append(data["dones"])
-        self.action_masks.append(data["action_masks"])
+    def add_episode(self, trajectory: list[dict]):
+        if trajectory:
+            self.trajectories.append(trajectory)
 
     def get_batches(self, device: torch.device, config: PPOConfig):
-        rewards = torch.stack(self.rewards).to(device)
-        values = torch.stack(self.values).to(device)
-        dones = torch.stack(self.dones).to(device)
+        all_episodes = []
+        all_advantages = []
 
-        T, B = rewards.shape
-        advantages = torch.zeros(T, B, dtype=torch.float32, device=device)
-        gae = torch.zeros(B, dtype=torch.float32, device=device)
+        for traj in self.trajectories:
+            rewards = torch.cat([step["rewards"] for step in traj], dim=0).float()
+            values = torch.cat([step["values"] for step in traj], dim=0).float()
+            dones = torch.cat([step["dones"] for step in traj], dim=0).float()
 
-        for t in reversed(range(T)):
-            next_val = torch.zeros_like(values[t]) if t == T - 1 else values[t + 1]
-            mask = 1.0 - dones[t]
-            delta = rewards[t] + config.gamma * next_val * mask - values[t]
-            gae = delta + config.gamma * config.gae_lambda * mask * gae
-            advantages[t] = gae
+            adv = torch.zeros_like(rewards)
+            gae = torch.zeros(1, dtype=torch.float32)
 
-        returns = advantages + values
-        # normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            for t in reversed(range(len(traj))):
+                next_value = values[t + 1] if t + 1 < len(traj) else torch.zeros_like(values[t])
+                nonterminal = 1.0 - dones[t]
+                delta = rewards[t] + config.gamma * next_value * nonterminal - values[t]
+                gae = delta + config.gamma * config.gae_lambda * nonterminal * gae
+                adv[t] = gae
 
-        flat_obs = torch.stack(self.obs).reshape(T * B, *OBS_DIM).to(device, non_blocking=True)
-        flat_actions = torch.stack(self.actions).reshape(T * B, 2).to(device, non_blocking=True)
-        flat_log_probs = torch.stack(self.log_probs).reshape(-1).to(device, non_blocking=True)
-        flat_action_masks = (
-            torch.stack(self.action_masks).reshape(T * B, 2, ACT_SIZE).to(device, non_blocking=True)
-        )
+            ret = adv + values
 
-        return {
-            "obs": flat_obs,
-            "actions": flat_actions,
-            "log_probs": flat_log_probs,
-            "advantages": advantages.reshape(-1),
-            "returns": returns.reshape(-1),
-            "action_masks": flat_action_masks,
-        }
+            episode_data = {
+                "obs": torch.cat([step["obs"] for step in traj], dim=0),
+                "actions": torch.cat([step["actions"] for step in traj], dim=0),
+                "log_probs": torch.cat([step["log_probs"] for step in traj], dim=0),
+                "action_masks": torch.cat([step["action_masks"] for step in traj], dim=0),
+                "advantages": adv,
+                "returns": ret,
+            }
+            all_episodes.append(episode_data)
+            all_advantages.append(adv)
+
+        # Global normalization of advantages
+        if all_advantages:
+            flat_adv = torch.cat(all_advantages, dim=0)
+            adv_mean = flat_adv.mean()
+            adv_std = flat_adv.std() + 1e-8
+            for ep in all_episodes:
+                ep["advantages"] = (ep["advantages"] - adv_mean) / adv_std
+
+        return all_episodes
 
 
 def save_checkpoint(path: Path, episode: int, policy: PolicyNet, optimizer=None, scheduler=None):
+    model = unwrap_policy(policy)
     state = {
         "episode": episode,
-        "model_state_dict": policy.state_dict(),
+        "model_state_dict": model.state_dict(),
     }
     if optimizer is not None:
         state["optimizer_state_dict"] = optimizer.state_dict()
@@ -116,10 +115,11 @@ def save_checkpoint(path: Path, episode: int, policy: PolicyNet, optimizer=None,
 
 
 def save_best_checkpoint(path: Path, episode: int, win_rate: float, policy: PolicyNet):
+    model = unwrap_policy(policy)
     state = {
         "episode": episode,
         "win_rate": win_rate,
-        "model_state_dict": policy.state_dict(),
+        "model_state_dict": model.state_dict(),
     }
     torch.save(state, path)
 
@@ -127,8 +127,9 @@ def save_best_checkpoint(path: Path, episode: int, win_rate: float, policy: Poli
 def load_checkpoint(path: Path, policy: PolicyNet, optimizer=None, scheduler=None):
     if not path.exists():
         return None
-    checkpoint = torch.load(path, map_location=policy.device)
-    policy.load_state_dict(checkpoint["model_state_dict"])
+    model = unwrap_policy(policy)
+    checkpoint = torch.load(path, map_location=model.device)
+    model.load_state_dict(checkpoint["model_state_dict"])
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     if scheduler is not None and "scheduler_state_dict" in checkpoint:
@@ -189,6 +190,8 @@ class OpponentPool:
         return pool
 
     def add(self, policy: PolicyNet, opponent_id: str) -> None:
+        model = unwrap_policy(policy)
+
         # Evict oldest if at capacity.
         while len(self.opponent_ids) >= self.config.pool_size:
             evicted_id = self.opponent_ids.pop(0)
@@ -197,11 +200,11 @@ class OpponentPool:
             if evicted_path.exists():
                 evicted_path.unlink()
 
-        # Save checkpoint.
-        torch.save({"model_state_dict": policy.state_dict()}, self.pool_dir / f"{opponent_id}.pt")
+        torch.save({"model_state_dict": model.state_dict()}, self.pool_dir / f"{opponent_id}.pt")
         self.opponent_ids.append(opponent_id)
         # Neutral starting win-rate.
         self.win_rates[opponent_id] = 0.5
+        self._load_policy_cached.cache_clear()
 
     def update_win_rate(self, opponent_id: str, won: bool) -> None:
         if opponent_id not in self.win_rates:

@@ -1029,14 +1029,40 @@ class FuzzyHeuristic(Player):
         # Score every mon vs. the opponent roster
         scores = {m: self._preview_mon_score(m, opp_mons, battle) for m in our_mons}
 
-        # Lock core pair first, then fill by score
-        must = [m for m in our_mons if m.species in core]
-        rest = sorted(
-            [m for m in our_mons if m not in must],
-            key=lambda m: scores[m],
-            reverse=True,
-        )
-        return (must + rest)[:4]
+        must_candidates = [m for m in our_mons if m.species in core]
+        must = [m for m in must_candidates if scores[m] > -0.5]
+        rest = [m for m in our_mons if m not in must]
+
+        def opp_coverage_set(mon: Pokemon) -> set[str]:
+            covered = set()
+            for opp in opp_mons:
+                best_mult = max(
+                    (
+                        opp.damage_multiplier(mv)
+                        for mv in mon.moves.values()
+                        if mv.category != MoveCategory.STATUS
+                    ),
+                    default=0.0,
+                )
+                if best_mult >= 1.5:
+                    covered.add(opp.species)
+            return covered
+
+        covered_opps: set[str] = set()
+        for m in must:
+            covered_opps |= opp_coverage_set(m)
+
+        selected = list(must)
+        while len(selected) < 4 and rest:
+            best_mon = max(
+                rest,
+                key=lambda m: scores[m] + 0.3 * len(opp_coverage_set(m) - covered_opps),
+            )
+            covered_opps |= opp_coverage_set(best_mon)
+            selected.append(best_mon)
+            rest.remove(best_mon)
+
+        return selected[:4]
 
     def _identify_core(self, our_mons: list[Pokemon]) -> set[str]:
         species = {m.species for m in our_mons}
@@ -1095,19 +1121,20 @@ class FuzzyHeuristic(Player):
         backs = [m for m in bring4 if m not in best_pair]
         return list(best_pair), backs
 
+    def _predict_opp_leads(self, opp_mons: list[Pokemon]) -> list[Pokemon]:
+        return sorted(opp_mons, key=lambda m: self.LEAD_BIAS.get(m.species, 0.0), reverse=True)[:2]
+
     def _preview_lead_score(
         self, pair: list[Pokemon], opp_mons: list[Pokemon], battle: AbstractBattle
     ) -> float:
         p0, p1 = pair
         score = 0.0
 
-        mv0 = set(m.id for m in p0.moves.values())
-        mv1 = set(m.id for m in p1.moves.values())
+        mv0 = {m.id for m in p0.moves.values()}
+        mv1 = {m.id for m in p1.moves.values()}
 
-        fakeout0 = "fakeout" in mv0
-        fakeout1 = "fakeout" in mv1
-        tr0 = "trickroom" in mv0
-        tr1 = "trickroom" in mv1
+        fakeout0, fakeout1 = "fakeout" in mv0, "fakeout" in mv1
+        tr0, tr1 = "trickroom" in mv0, "trickroom" in mv1
         setup0 = bool(self.SETUP & mv0)
         setup1 = bool(self.SETUP & mv1)
         redir0 = bool(self.REDIRECTION & mv0)
@@ -1115,6 +1142,7 @@ class FuzzyHeuristic(Player):
         speed0 = bool(self.SPEED_CONTROL & mv0)
         speed1 = bool(self.SPEED_CONTROL & mv1)
 
+        # Synergy (unchanged from your current code)
         if (fakeout0 and tr1) or (fakeout1 and tr0):
             score += 0.8
         if (fakeout0 and setup1) or (fakeout1 and setup0):
@@ -1125,20 +1153,20 @@ class FuzzyHeuristic(Player):
             score += 0.6
         if speed0 or speed1:
             score += 0.25
+        if tr0 and tr1:
+            score -= 0.5
+        if redir0 and redir1:
+            score -= 0.4
 
-        # Weather / terrain setters want to lead
-        if (
-            p0.ability in self.WEATHER_ABILITIES.values()
-            or p0.ability in self.TERRAIN_ABILITIES.values()
-        ):
-            score += 0.4
-        if (
-            p1.ability in self.WEATHER_ABILITIES.values()
-            or p1.ability in self.TERRAIN_ABILITIES.values()
-        ):
-            score += 0.4
+        # Weather / terrain setters
+        for p in (p0, p1):
+            if (
+                p.ability in self.WEATHER_ABILITIES.values()
+                or p.ability in self.TERRAIN_ABILITIES.values()
+            ):
+                score += 0.4
 
-        # Intimidate into physical-leaning opponents
+        # Intimidate
         phys_opp = sum(
             1 for o in opp_mons if self._safe_stat(o, "atk") >= self._safe_stat(o, "spa")
         )
@@ -1147,22 +1175,50 @@ class FuzzyHeuristic(Player):
         if p1.ability == "intimidate":
             score += 0.15 * phys_opp
 
-        for i, opp in enumerate(opp_mons):
-            weight = 0.5 if i < 2 else 0.25
-            pair_best = max(
-                self._preview_coverage(p0, opp, battle),
-                self._preview_coverage(p1, opp, battle),
+        # Coverage vs predicted leads (full weight) vs back row (low weight)
+        opp_leads = self._predict_opp_leads(opp_mons)
+        opp_back = [m for m in opp_mons if m not in opp_leads]
+        for opp in opp_leads:
+            score += (
+                max(
+                    self._preview_coverage(p0, opp, battle), self._preview_coverage(p1, opp, battle)
+                )
+                * 0.6
             )
-            score += pair_best * weight
+        for opp in opp_back:
+            score += (
+                max(
+                    self._preview_coverage(p0, opp, battle), self._preview_coverage(p1, opp, battle)
+                )
+                * 0.2
+            )
 
+        # Speed profile: prefer TR leads when opp is faster
+        opp_avg_spe = sum(self._safe_stat(o, "spe") for o in opp_mons) / max(len(opp_mons), 1)
+        our_avg_spe = (self._safe_stat(p0, "spe") + self._safe_stat(p1, "spe")) / 2.0
+        if tr0 or tr1:
+            score += 0.4 if opp_avg_spe > our_avg_spe else -0.2
+        elif speed0 or speed1:
+            score += 0.2 if our_avg_spe >= opp_avg_spe * 0.85 else 0.0
+
+        # Penalise leading into predicted opp fake-out
+        opp_lead_moves = {mv.id for o in opp_leads for mv in o.moves.values()}
+        if "fakeout" in opp_lead_moves:
+            ghost_immune = any(PokemonType.GHOST in p.types for p in pair)
+            has_protect = any("protect" in {mv.id for mv in p.moves.values()} for p in pair)
+            if not ghost_immune and not has_protect and not (redir0 or redir1):
+                score -= 0.4
+
+        # Penalise leading TR setters into predicted Taunt
+        if "taunt" in opp_lead_moves:
+            if tr0:
+                score -= 0.5
+            if tr1:
+                score -= 0.5
+
+        # Species lead biases
         score += self.LEAD_BIAS.get(p0.species, 0.0)
         score += self.LEAD_BIAS.get(p1.species, 0.0)
-
-        if tr0 and tr1:
-            score -= 0.5
-
-        if redir0 and redir1:
-            score -= 0.4
 
         return score
 

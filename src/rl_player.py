@@ -28,6 +28,7 @@ class RLPlayer(Player):
 
         assert 0.0 <= p <= 1.0
         self.p = p
+        self.state = None
 
     def _apply_top_p(self, logits: torch.Tensor) -> torch.Tensor:
         sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
@@ -43,7 +44,9 @@ class RLPlayer(Player):
         return sorted_logits.scatter(-1, sorted_indices, sorted_logits)
 
     def _top_p(self, obs, action_mask):
-        policy_logits, _, _, _ = self.policy(obs, action_mask, sample_actions=False)
+        policy_logits, _, _, _, self.state = self.policy(
+            obs, self.state, action_mask, sample_actions=False
+        )
         logits = self.policy._apply_masks(policy_logits, action_mask)
 
         p1_logits = self._apply_top_p(logits[:, 0])
@@ -61,7 +64,10 @@ class RLPlayer(Player):
         obs = self.get_observation(battle)
         action_mask = observation_builder.get_action_mask(battle)
         with torch.no_grad():
-            actions = self._top_p(obs, action_mask.unsqueeze(0))
+            actions = self._top_p(
+                obs.unsqueeze(0).to(self.policy.device),
+                action_mask.unsqueeze(0).to(self.policy.device),
+            )
         return actions[0].cpu().numpy()
 
     def choose_move(self, battle: AbstractBattle):
@@ -75,4 +81,13 @@ class RLPlayer(Player):
         return observation_builder.from_battle(battle)
 
     def teampreview(self, battle: AbstractBattle) -> str:
-        return self.teampreview_handler.select_team(battle)
+        assert isinstance(battle, DoubleBattle)
+        # Team preview is the start of the battle, so we reset the state here
+        self.state = None
+        action = self._get_action(battle)
+        order = Gen9VGCEnv.action_to_order(action, battle)
+        return order.message
+
+    def _battle_finished_callback(self, battle: AbstractBattle):
+        # Reset state at the end of the battle to prevent memory leaks or state carry-over
+        self.state = None

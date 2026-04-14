@@ -22,6 +22,7 @@ dependencies = [
     "scikit-learn>=1.0.0",
     "transformers[torch]>=4.57.1",
     "peft>=0.18.1",
+    "tensorboard>=2.20.0",
 ]
 
 [tool.pyright]
