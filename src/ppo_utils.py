@@ -17,19 +17,19 @@ def unwrap_policy(policy: PolicyNet) -> PolicyNet:
 
 @dataclass
 class PPOConfig:
-    num_episodes: int = 10
+    num_episodes: int = int(1e5)
     n_jobs: int = 2
-    rollouts_per_episode: int = 64
+    rollouts_per_episode: int = 128
 
     gamma: float = 0.96  # effective horizon = ~25 turns
     gae_lambda: float = 0.98  # sparse reward counteraction
-    lr: float = 1e-4
-    batch_size: int = 8
+    lr: float = 1e-5
+    batch_size: int = 32
     clip_range: float = 0.2
     entropy_coef: float = 0.01
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
-    target_kl: float = 0.015
+    target_kl: float = 0.01
     ppo_epochs: int = 4
     warmup_episodes: int = 20
     min_lr: float = 1e-6

@@ -26,7 +26,7 @@ from ppo_utils import (
     unwrap_policy,
 )
 
-config = PPOConfig()
+config = PPOConfig(num_episodes=1000, rollouts_per_episode=128, batch_size=12)
 _buffer_lock = threading.Lock()
 
 logging.basicConfig(
@@ -347,8 +347,9 @@ def ppo_update(episodes: list) -> dict:
     tot_steps = 0
     epochs_done = 0
 
+    early_stop = False
     for epoch_idx in range(config.ppo_epochs):
-        if shutdown_requested:
+        if shutdown_requested or early_stop:
             break
         random.shuffle(episodes)
 
@@ -362,8 +363,6 @@ def ppo_update(episodes: list) -> dict:
 
             optimizer.zero_grad(set_to_none=True)
 
-            # Accumulate loss and graphs for all episodes in batch before backprop,
-            # normalizing by total steps across the batch (same scheme as BC).
             batch_loss = torch.tensor(0.0, device=policy.device)
             batch_steps = 0
 
@@ -384,18 +383,20 @@ def ppo_update(episodes: list) -> dict:
 
             epoch_steps += batch_steps
 
+            if epoch_steps > 0:
+                avg_kl = epoch_kl / epoch_steps
+                if avg_kl > config.target_kl:
+                    logging.info(
+                        f"Early stop at epoch {epoch_idx + 1}/{config.ppo_epochs}, "
+                        f"batch {batch_start // config.batch_size + 1} "
+                        f"(KL={avg_kl:.4f} > {config.target_kl:.4f})"
+                    )
+                    early_stop = True
+                    break
+
         tot_steps += epoch_steps
         tot_kl_div += epoch_kl
         epochs_done += 1
-
-        if epoch_steps > 0:
-            avg_kl = epoch_kl / epoch_steps
-            if avg_kl > config.target_kl:
-                logging.info(
-                    f"Early stop at epoch {epoch_idx + 1}/{config.ppo_epochs} "
-                    f"(KL={avg_kl:.4f} > {config.target_kl:.4f})"
-                )
-                break
 
     if epochs_done == 0 or tot_steps == 0:
         return {
@@ -432,7 +433,7 @@ def main():
         if start is not None:
             logging.info(f"Resuming training from episode {start + 1}")
         else:
-            seed_path = config.pool_dir / "seed_mixed.pt"
+            seed_path = config.pool_dir / "seed_fuzzy_heuristic.pt"
             if seed_path.exists():
                 logging.info(f"No checkpoint found. Seeding policy from {seed_path}")
                 load_checkpoint(seed_path, policy)

@@ -1,8 +1,6 @@
 import sys
 from pathlib import Path
 
-import torch
-
 from behaviour_cloning import ReplayDataset, train_behavior_cloning
 from ppo_utils import OpponentPool, PPOConfig
 

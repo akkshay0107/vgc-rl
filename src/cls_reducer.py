@@ -33,7 +33,6 @@ class CLSReducer(nn.Module):
         nhead: int = 8,
         nlayer: int = 2,
         dim_feedforward: int = 3072,
-        dropout: float = 0.1,
         n_hg: int = 4,
     ):
         super().__init__()
@@ -59,7 +58,7 @@ class CLSReducer(nn.Module):
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
-            dropout=dropout,
+            dropout=0.0,
             batch_first=True,
             norm_first=True,
             activation="gelu",
@@ -69,7 +68,7 @@ class CLSReducer(nn.Module):
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
-            dropout=dropout,
+            dropout=0.0,
             batch_first=True,
             norm_first=True,
             activation="gelu",

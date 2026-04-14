@@ -174,7 +174,6 @@ class PolicyNet(nn.Module):
     ):
         mask2 = action_mask[:, 1].clone().bool()
 
-        # Battle-specific constraints (only apply if not Team Preview)
         # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot
         switch_mask = (1 <= action1) & (action1 <= 6) & (~is_tp)
         mask2[switch_mask, action1[switch_mask]] = 0
@@ -187,12 +186,26 @@ class PolicyNet(nn.Module):
         pass_mask = (action1 == 0) & (~is_tp)
         mask2[pass_mask, 0] = 0
 
-        # Team Preview specific constraints (only apply if Team Preview)
-        # Avoid picking the exact same drafting combination for both Lead and Back
-        # (Though uniqueness is handled in env.py, masking it helps the model learn)
+        # Ensure all 4 selected Pokemon are unique (no overlap between Lead and Back)
         if is_tp.any():
             tp_indices = torch.where(is_tp)[0]
-            mask2[tp_indices, action1[tp_indices]] = 0
+            tp_actions = action1[tp_indices]
+
+            p1_1 = tp_actions // 6 + 1
+            p2_1 = tp_actions % 6 + 1
+
+            all_a = torch.arange(36, device=logits.device)
+            p1_2 = all_a // 6 + 1
+            p2_2 = all_a % 6 + 1
+
+            overlap = (
+                (p1_2.unsqueeze(0) == p1_1.unsqueeze(1))
+                | (p1_2.unsqueeze(0) == p2_1.unsqueeze(1))
+                | (p2_2.unsqueeze(0) == p1_1.unsqueeze(1))
+                | (p2_2.unsqueeze(0) == p2_1.unsqueeze(1))
+            )
+
+            mask2[tp_indices.unsqueeze(1), all_a] &= ~overlap
 
         # If no valid action remains, force pass action to be valid for Pokemon 2
         no_valid = mask2.sum(-1) == 0
