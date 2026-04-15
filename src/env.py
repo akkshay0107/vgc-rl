@@ -404,7 +404,9 @@ class SimEnv(Gen9VGCEnv):
     def build_env(cls, env_id: int = 0):
         teams_dir = "./teams"
         team_files = [
-            path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
+            path.read_text(encoding="utf-8")
+            for path in Path(teams_dir).iterdir()
+            if path.is_file() and not path.name.startswith(".")
         ]
         team = RandomTeamFromPool(team_files)
         return cls(

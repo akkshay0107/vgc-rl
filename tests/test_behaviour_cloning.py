@@ -36,7 +36,9 @@ async def main():
         return
 
     team_files = [
-        path.read_text(encoding="utf-8") for path in Path(teams_dir).iterdir() if path.is_file()
+        path.read_text(encoding="utf-8")
+        for path in Path(teams_dir).iterdir()
+        if path.is_file() and not path.name.startswith(".")
     ]
     if not team_files:
         print("No team files found. Please ensure there are team files in the teams directory.")

@@ -21,12 +21,14 @@ class ReplayDataset(Dataset):
 
         for replay_file in sorted(path.rglob("*.replay")):
             try:
-                episode_data = torch.load(replay_file, weights_only=False)
-                self.episodes.append(episode_data)
+                # each replay file is a shard (list of episodes)
+                shard_data = torch.load(replay_file, weights_only=False)
+                if isinstance(shard_data, list):
+                    self.episodes.extend(shard_data)
             except Exception as e:
-                print(f"Could not load file {replay_file}: {e}")
+                print(f"could not load shard {replay_file}: {e}")
 
-        print(f"Loaded {len(self.episodes)} episodes from {path}")
+        print(f"loaded {len(self.episodes)} episodes from {path}")
 
     def __len__(self):
         return len(self.episodes)
