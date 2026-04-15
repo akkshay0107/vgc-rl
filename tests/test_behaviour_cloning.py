@@ -11,7 +11,6 @@ sys.path.insert(1, str(Path(__file__).resolve().parent.parent / "src"))
 from behaviour_cloning import ReplayDataset, train_behavior_cloning
 from policy import PolicyNet
 from rl_player import RLPlayer
-from teampreview import TeamPreviewHandler
 from teams import RandomTeamFromPool
 
 
@@ -45,13 +44,11 @@ async def main():
 
     team = RandomTeamFromPool(team_files)
     fmt = "gen9vgc2025regh"
-    tp_handler = TeamPreviewHandler()
 
     print("Loading Untrained Policy...")
     untrained_policy = PolicyNet()  # Randomly initialized weights
     untrained_player = RLPlayer(
         policy=untrained_policy,
-        teampreview_handler=tp_handler,
         account_configuration=AccountConfiguration("UntrainedPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,
@@ -79,7 +76,6 @@ async def main():
 
     bc_player = RLPlayer(
         policy=bc_policy,
-        teampreview_handler=tp_handler,
         account_configuration=AccountConfiguration("BCPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,

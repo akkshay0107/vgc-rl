@@ -6,7 +6,6 @@ from torch.distributions import Categorical
 import observation_builder
 from env import Gen9VGCEnv
 from policy import PolicyNet
-from teampreview import TeamPreviewHandler
 
 
 class RLPlayer(Player):
@@ -17,14 +16,12 @@ class RLPlayer(Player):
     def __init__(
         self,
         policy: PolicyNet,
-        teampreview_handler: TeamPreviewHandler,
         p: float = 0.9,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.policy = policy
-        self.teampreview_handler = teampreview_handler
 
         assert 0.0 <= p <= 1.0
         self.p = p

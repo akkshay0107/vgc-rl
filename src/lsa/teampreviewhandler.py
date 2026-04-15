@@ -3,7 +3,6 @@ from collections.abc import Callable
 from typing import Any
 
 from poke_env.battle import AbstractBattle, DoubleBattle
-
 from teampreview_document import team_species_list
 from teampreview_hybrid import fuse_teampreview
 

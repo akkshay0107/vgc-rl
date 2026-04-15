@@ -11,7 +11,6 @@ sys.path.insert(1, str(Path(__file__).resolve().parent.parent / "src"))
 
 from policy import PolicyNet
 from rl_player import RLPlayer
-from teampreview import TeamPreviewHandler
 from teams import RandomTeamFromPool
 
 
@@ -43,7 +42,6 @@ async def main():
 
     team = RandomTeamFromPool(team_files)
     fmt = "gen9vgc2025regh"
-    tp_handler = TeamPreviewHandler()
 
     rl_policy = PolicyNet()
     ppo_checkpoint_path = root_dir / "checkpoints" / "ppo_checkpoint.pt"
@@ -58,7 +56,6 @@ async def main():
 
     rl_player = RLPlayer(
         policy=rl_policy,
-        teampreview_handler=tp_handler,
         account_configuration=AccountConfiguration("RLPlayer", None),
         battle_format=fmt,
         server_configuration=LocalhostServerConfiguration,

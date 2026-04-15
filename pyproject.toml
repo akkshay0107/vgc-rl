@@ -5,7 +5,7 @@ description = "A RL agent to play VGC in a competent manner"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "poke-env @ git+https://github.com/hsahovic/poke-env.git@master",
+    "poke-env==0.11.0",
     "torch>=2.7.0",
     "numpy>=1.21.6",
     "gymnasium>=0.26.3",
@@ -40,4 +40,9 @@ explicit = true
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu" },
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
 ]

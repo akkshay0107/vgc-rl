@@ -31,7 +31,6 @@ def matchup_string(our_species: list[str], opp_species: list[str]) -> str:
 
 
 class LSATeamPreviewModel:
-
     def __init__(
         self,
         n_components: int = 50,
@@ -48,10 +47,10 @@ class LSATeamPreviewModel:
 
         self.vectorizer: TfidfVectorizer | None = None
         self.svd: TruncatedSVD | None = None
-        self.doc_vectors: np.ndarray | None = None 
-        self.bring_labels: list[tuple[int, ...]] = []  
-        self.lead_labels: list[tuple[int, ...]] = []   # subset of bring currently
-        self.win_labels: list[bool] = []   # whether our side won for weighting at inference 
+        self.doc_vectors: np.ndarray | None = None
+        self.bring_labels: list[tuple[int, ...]] = []
+        self.lead_labels: list[tuple[int, ...]] = []  # subset of bring currently
+        self.win_labels: list[bool] = []  # whether our side won for weighting at inference
         self.team_size: int = 6
 
     def fit(
@@ -62,7 +61,11 @@ class LSATeamPreviewModel:
         team_size: int = 6,
         win_labels: list[bool] | None = None,
     ) -> LSATeamPreviewModel:
-        if not documents or len(documents) != len(bring_labels) or len(documents) != len(lead_labels):
+        if (
+            not documents
+            or len(documents) != len(bring_labels)
+            or len(documents) != len(lead_labels)
+        ):
             raise ValueError("documents, bring_labels, and lead_labels must have same length")
         self.team_size = team_size
         if win_labels is not None and len(win_labels) != len(documents):
@@ -102,7 +105,6 @@ class LSATeamPreviewModel:
         bring_k: int,
         lead_k: int,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        
         query_vec = self.query_vector(matchup)
         sims = self.similarities(query_vec)
         sims = np.clip(sims, self.min_similarity, None)
@@ -116,8 +118,9 @@ class LSATeamPreviewModel:
                 if i < len(self.win_labels) and self.win_labels[i]:
                     weights[k] *= win_bonus
         if np.sum(weights) <= 0:
-
-            indices = self.rng.choice(self.team_size, size=min(bring_k, self.team_size), replace=False)
+            indices = self.rng.choice(
+                self.team_size, size=min(bring_k, self.team_size), replace=False
+            )
             bring = tuple(int(x) for x in indices[:bring_k])
             lead = tuple(int(x) for x in bring[:lead_k])
             return bring, lead
@@ -169,7 +172,6 @@ class LSATeamPreviewModel:
         deterministic: bool = False,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
         from poke_env.battle import DoubleBattle
-
         from teampreview_document import team_species_list
 
         _ = deterministic  # retrieval policy is always stochastic; flag kept for API parity

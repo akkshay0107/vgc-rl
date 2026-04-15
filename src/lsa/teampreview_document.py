@@ -1,10 +1,8 @@
-
 from __future__ import annotations
 
 from typing import Any
 
 from poke_env.battle import DoubleBattle
-
 from teampreview_lsa import _normalize_species
 
 
@@ -50,12 +48,8 @@ def _mon_tokens(mon: Any) -> str:
 
 def rich_document_from_battle(battle: DoubleBattle) -> str:
     assert isinstance(battle, DoubleBattle)
-    our = " ".join(
-        f"our{i}:{_mon_tokens(m)}" for i, m in enumerate(battle.team.values())
-    )
-    opp = " ".join(
-        f"opp{i}:{_mon_tokens(m)}" for i, m in enumerate(battle.opponent_team.values())
-    )
+    our = " ".join(f"our{i}:{_mon_tokens(m)}" for i, m in enumerate(battle.team.values()))
+    opp = " ".join(f"opp{i}:{_mon_tokens(m)}" for i, m in enumerate(battle.opponent_team.values()))
     return f"{our} || {opp}"
 
 
@@ -81,20 +75,19 @@ def document_for_sample(
                 ml = [_tok(str(x)) for x in list(mvs)[:4]]
                 while len(ml) < 4:
                     ml.append("nomove")
-                parts.append(
-                    f"{prefix}{i}:{sp} item:{item_s} ab:{ab_s} mv:{','.join(ml)}"
-                )
+                parts.append(f"{prefix}{i}:{sp} item:{item_s} ab:{ab_s} mv:{','.join(ml)}")
             else:
-                parts.append(f"{prefix}{i}:{sp} item:noitem ab:noability mv:nomove,nomove,nomove,nomove")
+                parts.append(
+                    f"{prefix}{i}:{sp} item:noitem ab:noability mv:nomove,nomove,nomove,nomove"
+                )
         return " ".join(parts)
 
-    return (
-        f"{side('our', our_species, our_party)} || "
-        f"{side('opp', opp_species, opp_party)}"
-    )
+    return f"{side('our', our_species, our_party)} || {side('opp', opp_species, opp_party)}"
 
 
-def parse_party_from_poke_lines(lines: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def parse_party_from_poke_lines(
+    lines: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from parse_showdown_logs import parse_party_from_poke_lines as _parse_party_from_poke_lines
 
     return _parse_party_from_poke_lines(lines)

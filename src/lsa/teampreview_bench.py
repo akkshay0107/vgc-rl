@@ -6,14 +6,13 @@ from typing import Any
 from poke_env import AccountConfiguration, LocalhostServerConfiguration
 from poke_env.battle import AbstractBattle
 from poke_env.player import MaxBasePowerPlayer, RandomPlayer, SimpleHeuristicsPlayer
+from teampreviewhandler import TeamPreviewHandler
 
 from heuristic import FuzzyHeuristic
-from teampreviewhandler import TeamPreviewHandler
 from teams import RandomTeamFromPool
 
 
 class WithTeamPreview:
-
     def __init__(self, *args, tp_model=None, tp_temperature=1.0, tp_deterministic=False, **kwargs):
         if "lsa_model" in kwargs:
             tp_model = kwargs.pop("lsa_model")
@@ -49,7 +48,6 @@ class FuzzyHeuristicTP(WithTeamPreview, FuzzyHeuristic):
 
 
 class FuzzyHeuristicHybridTP(WithTeamPreview, FuzzyHeuristic):
-
     def __init__(self, *args, tp_fuzzy_hybrid_similarity: float = 0.5, **kwargs):
         self._tp_hybrid_s = float(tp_fuzzy_hybrid_similarity)
         super().__init__(*args, **kwargs)

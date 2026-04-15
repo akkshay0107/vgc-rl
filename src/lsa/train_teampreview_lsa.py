@@ -4,13 +4,14 @@ import argparse
 import json
 from pathlib import Path
 
+from teampreview_lsa import LSATeamPreviewModel
+from teampreview_supervised import SupervisedTeamPreviewModel
+
 from parse_showdown_logs import (
     documents_and_labels_lsa,
     documents_and_labels_supervised_rich,
     parse_replays_dir,
 )
-from teampreview_lsa import LSATeamPreviewModel
-from teampreview_supervised import SupervisedTeamPreviewModel, is_supervised_checkpoint
 
 
 def check_checkpoint(path: str | Path) -> bool:
@@ -87,7 +88,9 @@ def main() -> None:
     ap.add_argument("--max_preds", type=int, default=10, help="(LSA) retrieval pool")
     ap.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     ap.add_argument("--min_similarity", type=float, default=0.0, help="(LSA) similarity floor")
-    ap.add_argument("--max_features", type=int, default=30_000, help="(supervised) TF-IDF vocab cap")
+    ap.add_argument(
+        "--max_features", type=int, default=30_000, help="(supervised) TF-IDF vocab cap"
+    )
     ap.add_argument("--C_bring", type=float, default=1.0, help="(supervised) bring logreg C")
     ap.add_argument("--C_lead", type=float, default=1.0, help="(supervised) lead logreg C")
     ap.add_argument(
@@ -97,8 +100,12 @@ def main() -> None:
         help="(supervised) sample_weight multiplier for winning games (1.0=no weighting)",
     )
     ap.add_argument("--limit", type=int, default=0, help="Max number of samples to load, 0 = all)")
-    ap.add_argument("--no-recursive", action="store_true", help="Do not search replays_dir recursively")
-    ap.add_argument("--wins-only", action="store_true", help="Only use samples where the recorded side won")
+    ap.add_argument(
+        "--no-recursive", action="store_true", help="Do not search replays_dir recursively"
+    )
+    ap.add_argument(
+        "--wins-only", action="store_true", help="Only use samples where the recorded side won"
+    )
     ap.add_argument(
         "--filter-opponent",
         type=str,
@@ -106,7 +113,9 @@ def main() -> None:
         metavar="TAG",
         help="Only keep samples with this opponent_heuristic tag (from replay_gen logs), e.g. fuzzy, random",
     )
-    ap.add_argument("--check", type=str, default=None, metavar="PATH", help="Validate existing .pt checkpoint")
+    ap.add_argument(
+        "--check", type=str, default=None, metavar="PATH", help="Validate existing .pt checkpoint"
+    )
     args = ap.parse_args()
 
     if args.check:

@@ -10,13 +10,10 @@ from sklearn.dummy import DummyClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import normalize
-
 from teampreview_document import document_for_sample, rich_document_from_battle
 
 # (position in sorted-bring list) ordered lead slots — 12 permutations P(4,2)
-_ORDERED_LEAD_PAIRS: list[tuple[int, int]] = [
-    (i, j) for i in range(4) for j in range(4) if i != j
-]
+_ORDERED_LEAD_PAIRS: list[tuple[int, int]] = [(i, j) for i in range(4) for j in range(4) if i != j]
 
 
 def _encode_ordered_lead(bring: tuple[int, ...], lead: tuple[int, ...]) -> int:
@@ -86,7 +83,9 @@ class SupervisedTeamPreviewModel:
 
         sw: np.ndarray | None = None
         if win_labels is not None and len(win_labels) == n:
-            sw = np.array([1.0 + (win_weight - 1.0) * float(w) for w in win_labels], dtype=np.float64)
+            sw = np.array(
+                [1.0 + (win_weight - 1.0) * float(w) for w in win_labels], dtype=np.float64
+            )
 
         self.vectorizer = TfidfVectorizer(
             lowercase=True,
@@ -210,8 +209,10 @@ class SupervisedTeamPreviewModel:
         *,
         document: str | None = None,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        doc = document if document is not None else document_for_sample(
-            our_species, opp_species, our_party=None, opp_party=None
+        doc = (
+            document
+            if document is not None
+            else document_for_sample(our_species, opp_species, our_party=None, opp_party=None)
         )
         return self.sample_bring_lead(doc, team_size, bring_k, lead_k)
 

@@ -7,7 +7,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import cast
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -67,34 +66,6 @@ scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 if config.compile_policy and policy.device.type == "cuda":
     policy = cast(PolicyNet, torch.compile(policy))
-
-def _patch_env_teampreview(env, handler):
-    from poke_env.battle import AbstractBattle
-
-    async def _teampreview_async(battle: AbstractBattle) -> str:
-        return handler.select_team(battle)
-
-    env.agent1._teampreview = _teampreview_async
-    env.agent2._teampreview = _teampreview_async
-
-
-def _create_teampreview_handler():
-    from teampreviewhandler import TeamPreviewHandler
-
-    path = getattr(config, "teampreview_lsa_path", None)
-    if path is not None:
-        path = Path(path)
-    if path is not None and path.exists():
-        from teampreview_supervised import SupervisedTeamPreviewModel, is_supervised_checkpoint
-
-        if is_supervised_checkpoint(path):
-            model = SupervisedTeamPreviewModel.load(path)
-        else:
-            from teampreview_lsa import LSATeamPreviewModel
-
-            model = LSATeamPreviewModel.load(path)
-        return TeamPreviewHandler(model=model)
-    return TeamPreviewHandler()
 
 
 def reducer_of(model: PolicyNet):
@@ -447,9 +418,6 @@ def ppo_update(episodes: list) -> dict:
 
 def main():
     envs = [SimEnv.build_env(env_id=i) for i in range(config.n_jobs)]
-    tp_handler = _create_teampreview_handler()
-    for env in envs:
-        _patch_env_teampreview(env, tp_handler)
     buffer = RolloutBuffer()
     executor = ThreadPoolExecutor(max_workers=config.n_jobs)
 
