@@ -1,5 +1,6 @@
 import re
 from functools import lru_cache
+from pathlib import Path
 
 import torch
 from poke_env.battle import AbstractBattle, DoubleBattle
@@ -22,10 +23,33 @@ from lookups import (
     TINYBERT_SZ,
 )
 
+
+def get_tinybert_model_and_tokenizer(device):
+    """
+    Loads TinyBERT model and tokenizer from local 'models/' directory.
+    If not found, it downloads them from Hugging Face and saves them locally.
+    """
+    model_name = "huawei-noah/TinyBERT_General_4L_312D"
+    model_dir = Path(__file__).parent.parent / "models" / "TinyBERT_General_4L_312D"
+
+    if not model_dir.exists():
+        print(f"Downloading TinyBERT model to {model_dir}...")
+        model_dir.mkdir(parents=True, exist_ok=True)
+        _tokenizer = BertTokenizerFast.from_pretrained(model_name)
+        _model = BertModel.from_pretrained(model_name)
+        _tokenizer.save_pretrained(model_dir)
+        _model.save_pretrained(model_dir)
+
+    tokenizer = BertTokenizerFast.from_pretrained(model_dir)
+    model = BertModel.from_pretrained(model_dir).to(device)
+    model.eval()
+    return model, tokenizer
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tokenizer = BertTokenizerFast.from_pretrained("huawei-noah/TinyBERT_General_4L_312D")
-model = BertModel.from_pretrained("huawei-noah/TinyBERT_General_4L_312D").to(device)  # type: ignore
-model.eval()
+model, tokenizer = get_tinybert_model_and_tokenizer(device)
+
+
 # Pre-compiled constants and regexes for optimization
 CONDITION_DESC = {
     -1: "This Pokemon is DROPPED. It is not part of the battle.",

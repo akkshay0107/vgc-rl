@@ -20,6 +20,7 @@ teams/.pastes
 !.gitignore
 
 # Checkpoints
+models/
 checkpoints/
 ppo_best_checkpoint.pt
 
