@@ -72,33 +72,6 @@ def main():
     else:
         print("seed_fuzzy_heuristic already exists.")
 
-    # 4. Fuzzy into human tuning
-    if "seed_mixed" not in pool.opponent_ids:
-        print("--- Training seed_mixed ---")
-        ds_fuzzy = _get_dataset(replays_base, "fuzzy_heuristic")
-        ds_inter = _get_dataset(replays_base, "interactive")
-
-        if ds_fuzzy and ds_inter:
-            policy = train_behavior_cloning(ds_fuzzy, **bc_kwargs)
-            if policy is None:
-                print("Error: Mixed dataset could not be created.")
-                return
-
-            # retrain on interactive
-            new_kwargs = bc_kwargs
-            new_kwargs["learning_rate"] /= 10.0
-            policy = train_behavior_cloning(ds_inter, policy=policy, **new_kwargs)
-            if policy is None:
-                print("Error: Interactive dataset missing.")
-                return
-
-            pool.add(policy, "seed_mixed")
-            added_seeds.append("seed_mixed")
-        else:
-            print("Error: Mixed dataset could not be created.")
-    else:
-        print("seed_mixed already exists.")
-
     if added_seeds:
         pool.save_state()
         print(f"\nPool state saved. Added {len(added_seeds)} seeds: {', '.join(added_seeds)}")
