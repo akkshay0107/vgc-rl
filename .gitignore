@@ -12,6 +12,7 @@ wheels/
 
 # Additional
 *.pdf
+.DS_Store
 
 # Inverts
 !.python-version
@@ -25,6 +26,7 @@ ppo_best_checkpoint.pt
 replays/
 test_replays/
 
-# Training logs + tensorboard
+# Training related
 runs/
 *.log
+.ppoconfig

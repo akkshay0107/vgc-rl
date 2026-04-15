@@ -1,7 +1,7 @@
 import functools
 import json
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Self
 
@@ -45,6 +45,56 @@ class PPOConfig:
     pool_cache_size: int = 5
     self_play_prob: float = 0.5
     compile_policy: bool = False
+
+
+def load_config(config_path: str = ".ppoconfig") -> PPOConfig:
+    """
+    Loads a PPOConfig from a flat key=value file.
+    Merges specified values for hyperparameters with the default values
+    for unspecified hyperparameters.
+
+    Defaults to returning default PPOConfig on any error.
+    """
+    path = Path(config_path)
+    if not path.exists():
+        return PPOConfig()
+
+    config_dict = {}
+    valid_fields = {f.name: f.type for f in fields(PPOConfig)}
+
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                if "=" not in line:
+                    continue
+
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+
+                if key in valid_fields:
+                    target_type = valid_fields[key]
+                    try:
+                        if target_type is int:
+                            config_dict[key] = int(float(value))
+                        elif target_type is float:
+                            config_dict[key] = float(value)
+                        elif target_type is bool:
+                            config_dict[key] = value.lower() in ("true", "1", "yes")
+                        elif target_type is Path:
+                            config_dict[key] = Path(value)
+                        else:
+                            config_dict[key] = value
+                    except (ValueError, TypeError):
+                        continue
+
+        return PPOConfig(**config_dict)
+    except Exception:
+        return PPOConfig()
 
 
 class RolloutBuffer:

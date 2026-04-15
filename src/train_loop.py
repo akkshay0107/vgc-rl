@@ -19,14 +19,14 @@ from lookups import ACT_SIZE, OBS_DIM
 from policy import PolicyNet
 from ppo_utils import (
     OpponentPool,
-    PPOConfig,
     RolloutBuffer,
     load_checkpoint,
+    load_config,
     save_checkpoint,
     unwrap_policy,
 )
 
-config = PPOConfig(num_episodes=1000, rollouts_per_episode=128, batch_size=12)
+config = load_config()
 _buffer_lock = threading.Lock()
 
 logging.basicConfig(
