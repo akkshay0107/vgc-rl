@@ -18,20 +18,21 @@ def unwrap_policy(policy: PolicyNet) -> PolicyNet:
 @dataclass
 class PPOConfig:
     num_episodes: int = int(1e5)
+    num_envs: int = 2
     n_jobs: int = 2
-    rollouts_per_episode: int = 128
+    rollouts_per_episode: int = 64
 
-    gamma: float = 0.96  # effective horizon = ~25 turns
-    gae_lambda: float = 0.98  # sparse reward counteraction
+    gamma: float = 0.97
+    gae_lambda: float = 0.95
     lr: float = 1e-5
-    batch_size: int = 32
+    batch_size: int = 16
     clip_range: float = 0.2
     entropy_coef: float = 0.01
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
-    target_kl: float = 0.01
+    target_kl: float = 0.02
     ppo_epochs: int = 4
-    warmup_episodes: int = 20
+    warmup_episodes: int = 100
     min_lr: float = 1e-6
 
     checkpoint_path: Path = Path(__file__).parent.parent / "checkpoints" / "ppo_checkpoint.pt"
@@ -44,7 +45,9 @@ class PPOConfig:
     min_pool_win_rate_weight: float = 0.1
     pool_cache_size: int = 5
     self_play_prob: float = 0.5
-    compile_policy: bool = False
+    compile_policy: bool = True
+    # Skew importance of team preview step
+    team_preview_loss_mult: float = 2.0
 
 
 def load_config(config_path: str = ".ppoconfig") -> PPOConfig:
@@ -136,6 +139,7 @@ class RolloutBuffer:
                 "action_masks": torch.cat([step["action_masks"] for step in traj], dim=0),
                 "advantages": adv,
                 "returns": ret,
+                "is_team_preview": torch.cat([step["is_team_preview"] for step in traj], dim=0),
             }
             all_episodes.append(episode_data)
             all_advantages.append(adv)

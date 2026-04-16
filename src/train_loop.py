@@ -1,7 +1,9 @@
 import logging
+import os
 import queue
 import random
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -40,6 +42,9 @@ shutdown_requested = False
 
 def handle_sigterm(signum, frame):
     global shutdown_requested
+    if shutdown_requested:
+        logging.warning("Second shutdown signal received, forcing immediate exit...")
+        os._exit(1)
     logging.warning("SIGTERM received, requesting shutdown...")
     shutdown_requested = True
 
@@ -177,6 +182,8 @@ def collect_rollout(
             agent2: action2[0].cpu().numpy(),
         }
 
+        if shutdown_requested:
+            break
         next_obs, rewards, terminated, truncated, _ = env.step(actions)
 
         done = bool(
@@ -192,6 +199,7 @@ def collect_rollout(
                 "rewards": torch.tensor([rewards[agent1]], dtype=torch.float32),
                 "dones": torch.tensor([done], dtype=torch.float32),
                 "action_masks": mask1.cpu(),
+                "is_team_preview": torch.tensor([env.battle1.teampreview], dtype=torch.bool),
             }
         )
 
@@ -205,6 +213,7 @@ def collect_rollout(
                     "rewards": torch.tensor([rewards[agent2]], dtype=torch.float32),
                     "dones": torch.tensor([done], dtype=torch.float32),
                     "action_masks": mask2.cpu(),
+                    "is_team_preview": torch.tensor([env.battle2.teampreview], dtype=torch.bool),
                 }
             )
 
@@ -265,6 +274,11 @@ def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPo
     ]
 
     for f in as_completed(futures):
+        if shutdown_requested:
+            # Cancel all pending futures if possible
+            for future in futures:
+                future.cancel()
+            break
         opp_id, won, was_self_play = f.result()
         if was_self_play:
             self_wins += int(won)
@@ -294,6 +308,7 @@ def _run_episode_ppo(ep: dict, device: torch.device) -> tuple[torch.Tensor, dict
     advantages = ep["advantages"].to(device, non_blocking=True)
     returns = ep["returns"].to(device, non_blocking=True)
     action_masks = ep["action_masks"].to(device, non_blocking=True)
+    is_tp = ep["is_team_preview"].to(device, non_blocking=True)
 
     T = obs.shape[0]
     state = initial_state(policy, 1, device)
@@ -325,6 +340,9 @@ def _run_episode_ppo(ep: dict, device: torch.device) -> tuple[torch.Tensor, dict
             + config.value_coef * step_value_loss
             + config.entropy_coef * step_entropy_loss
         )
+        if is_tp[t]:
+            step_loss = step_loss * config.team_preview_loss_mult
+
         total_loss = total_loss + step_loss
 
         with torch.no_grad():
@@ -417,7 +435,24 @@ def ppo_update(episodes: list) -> dict:
 
 
 def main():
-    envs = [SimEnv.build_env(env_id=i) for i in range(config.n_jobs)]
+    showdown_procs = []
+    for i in range(config.num_envs):
+        port = 8000 + i
+        proc = subprocess.Popen(
+            ["node", "pokemon-showdown", "start", "--no-security", str(port)],
+            cwd="pokemon-showdown",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        showdown_procs.append(proc)
+
+    # Give the servers a moment to start
+    time.sleep(10)
+
+    envs = [
+        SimEnv.build_env(env_id=i, server_port=8000 + (i % config.num_envs))
+        for i in range(config.n_jobs)
+    ]
     buffer = RolloutBuffer()
     executor = ThreadPoolExecutor(max_workers=config.n_jobs)
 
@@ -504,13 +539,18 @@ def main():
                 logging.info("Checkpoint saved.")
 
     finally:
-        executor.shutdown(wait=True)
+        executor.shutdown(wait=False, cancel_futures=True)
         tb_writer.close()
         for env in envs:
             try:
                 env.close()
             except Exception:
                 pass
+
+        for proc in showdown_procs:
+            proc.terminate()
+            proc.wait()
+
         logging.info("Training loop terminated successfully.")
 
 

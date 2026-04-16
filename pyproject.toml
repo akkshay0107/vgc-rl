@@ -21,7 +21,6 @@ dependencies = [
     "pettingzoo",
     "scikit-learn>=1.0.0",
     "transformers[torch]>=4.57.1",
-    "peft>=0.18.1",
     "tensorboard>=2.20.0",
 ]
 
@@ -32,12 +31,3 @@ venv = ".venv"
 [tool.ruff]
 line-length = 100
 
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = [
-  { index = "pytorch-cpu" },
-]
