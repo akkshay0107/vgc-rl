@@ -294,64 +294,97 @@ def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPo
     }
 
 
-def _run_episode_ppo(ep: dict, device: torch.device) -> tuple[torch.Tensor, dict[str, float], int]:
+def _run_batched_ppo(
+    episodes: list[dict], device: torch.device
+) -> tuple[torch.Tensor, dict[str, float], int]:
     """
-    Run one PPO episode with BPTT. Carries recurrent state step-to-step.
-    Returns:
-        total_loss: summed loss over all steps (scalar tensor, grad attached)
-        step_metrics: dict of summed per-step scalar metrics for logging
-        T: number of steps in the episode
+    Run PPO BPTT over a minibatch of variable-length episodes.
+    Expects episodes to already be sorted by length so the active recurrent
+    batch is always a contiguous prefix that shrinks as shorter games finish.
     """
-    obs = ep["obs"].to(device, non_blocking=True)
-    actions = ep["actions"].to(device, non_blocking=True)
-    old_log_probs = ep["log_probs"].to(device, non_blocking=True)
-    advantages = ep["advantages"].to(device, non_blocking=True)
-    returns = ep["returns"].to(device, non_blocking=True)
-    action_masks = ep["action_masks"].to(device, non_blocking=True)
-    is_tp = ep["is_team_preview"].to(device, non_blocking=True)
-
-    T = obs.shape[0]
-    state = initial_state(policy, 1, device)
-
-    total_loss = torch.tensor(0.0, device=device)
-    metrics = {"policy_loss": 0.0, "value_loss": 0.0, "entropy_loss": 0.0, "kl_div": 0.0}
-
-    for t in range(T):
-        curr_log_prob, curr_entropy, curr_val, state = policy.evaluate_actions(
-            obs[t : t + 1],
-            actions[t : t + 1],
-            action_masks[t : t + 1],
-            state=state,
+    if not episodes:
+        return (
+            torch.tensor(0.0, device=device),
+            {"policy_loss": 0.0, "value_loss": 0.0, "entropy_loss": 0.0, "kl_div": 0.0},
+            0,
         )
 
-        log_ratio = curr_log_prob - old_log_probs[t : t + 1]
+    batch_size = len(episodes)
+    lengths = torch.tensor([ep["length"] for ep in episodes], device=device)
+    max_steps = int(lengths[0].item())
+
+    obs = [ep["obs"] for ep in episodes]
+    actions = [ep["actions"] for ep in episodes]
+    old_log_probs = [ep["log_probs"] for ep in episodes]
+    advantages = [ep["advantages"] for ep in episodes]
+    returns = [ep["returns"] for ep in episodes]
+    action_masks = [ep["action_masks"] for ep in episodes]
+    is_tp = [ep["is_team_preview"] for ep in episodes]
+
+    state = initial_state(policy, batch_size, device)
+    total_loss = torch.tensor(0.0, device=device)
+    metrics = {"policy_loss": 0.0, "value_loss": 0.0, "entropy_loss": 0.0, "kl_div": 0.0}
+    total_steps = 0
+
+    for t in range(max_steps):
+        active_n = int((lengths > t).sum().item())
+        if active_n == 0:
+            break
+
+        obs_t = torch.cat([ep_obs[t : t + 1] for ep_obs in obs[:active_n]], dim=0)
+        actions_t = torch.cat([ep_actions[t : t + 1] for ep_actions in actions[:active_n]], dim=0)
+        old_log_probs_t = torch.cat(
+            [ep_log_probs[t : t + 1] for ep_log_probs in old_log_probs[:active_n]], dim=0
+        )
+        advantages_t = torch.cat(
+            [ep_advantages[t : t + 1] for ep_advantages in advantages[:active_n]], dim=0
+        )
+        returns_t = torch.cat([ep_returns[t : t + 1] for ep_returns in returns[:active_n]], dim=0)
+        action_masks_t = torch.cat(
+            [ep_action_masks[t : t + 1] for ep_action_masks in action_masks[:active_n]], dim=0
+        )
+        is_tp_t = torch.cat([ep_is_tp[t : t + 1] for ep_is_tp in is_tp[:active_n]], dim=0)
+
+        curr_state = (state[0][:active_n], state[1][:active_n])
+        curr_log_prob, curr_entropy, curr_val, next_state = policy.evaluate_actions(
+            obs_t,
+            actions_t,
+            action_masks_t,
+            state=curr_state,
+        )
+
+        log_ratio = curr_log_prob - old_log_probs_t
         ratio = torch.exp(log_ratio)
 
-        mb_adv = advantages[t : t + 1]
-        surr1 = ratio * mb_adv
-        surr2 = torch.clamp(ratio, 1.0 - config.clip_range, 1.0 + config.clip_range) * mb_adv
+        surr1 = ratio * advantages_t
+        surr2 = torch.clamp(ratio, 1.0 - config.clip_range, 1.0 + config.clip_range) * advantages_t
 
-        step_policy_loss = -torch.min(surr1, surr2).mean()
-        step_value_loss = F.mse_loss(curr_val, returns[t : t + 1])
-        step_entropy_loss = -curr_entropy.mean()
+        step_policy_loss = -torch.min(surr1, surr2)
+        step_value_loss = F.mse_loss(curr_val, returns_t, reduction="none")
+        step_entropy_loss = -curr_entropy
 
         step_loss = (
             step_policy_loss
             + config.value_coef * step_value_loss
             + config.entropy_coef * step_entropy_loss
         )
-        if is_tp[t]:
-            step_loss = step_loss * config.team_preview_loss_mult
+        step_loss = torch.where(
+            is_tp_t,
+            step_loss * config.team_preview_loss_mult,
+            step_loss,
+        )
 
-        total_loss = total_loss + step_loss
+        total_loss = total_loss + step_loss.sum()
+        total_steps += active_n
+        state = next_state
 
         with torch.no_grad():
-            metrics["policy_loss"] += step_policy_loss.item()
-            metrics["value_loss"] += step_value_loss.item()
-            metrics["entropy_loss"] += step_entropy_loss.item()
-            metrics["kl_div"] += (old_log_probs[t : t + 1] - curr_log_prob).mean().item()
+            metrics["policy_loss"] += step_policy_loss.sum().item()
+            metrics["value_loss"] += step_value_loss.sum().item()
+            metrics["entropy_loss"] += step_entropy_loss.sum().item()
+            metrics["kl_div"] += (old_log_probs_t - curr_log_prob).sum().item()
 
-    return total_loss, metrics, T
+    return total_loss, metrics, total_steps
 
 
 def ppo_update(episodes: list) -> dict:
@@ -378,21 +411,16 @@ def ppo_update(episodes: list) -> dict:
             if shutdown_requested:
                 break
             batch = episodes[batch_start : batch_start + config.batch_size]
+            batch.sort(key=lambda ep: ep["length"], reverse=True)
 
             optimizer.zero_grad(set_to_none=True)
 
-            batch_loss = torch.tensor(0.0, device=policy.device)
-            batch_steps = 0
+            batch_loss, batch_metrics, batch_steps = _run_batched_ppo(batch, policy.device)
 
-            for ep in batch:
-                ep_loss, ep_metrics, T = _run_episode_ppo(ep, policy.device)
-                batch_loss = batch_loss + ep_loss
-                batch_steps += T
-
-                tot_policy_loss += ep_metrics["policy_loss"]
-                tot_value_loss += ep_metrics["value_loss"]
-                tot_entropy_loss += ep_metrics["entropy_loss"]
-                epoch_kl += ep_metrics["kl_div"]
+            tot_policy_loss += batch_metrics["policy_loss"]
+            tot_value_loss += batch_metrics["value_loss"]
+            tot_entropy_loss += batch_metrics["entropy_loss"]
+            epoch_kl += batch_metrics["kl_div"]
 
             if batch_steps > 0:
                 (batch_loss / batch_steps).backward()

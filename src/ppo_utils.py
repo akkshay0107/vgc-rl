@@ -18,8 +18,8 @@ def unwrap_policy(policy: PolicyNet) -> PolicyNet:
 @dataclass
 class PPOConfig:
     num_episodes: int = int(1e5)
-    num_envs: int = 2
-    n_jobs: int = 2
+    num_envs: int = 4
+    n_jobs: int = 8
     rollouts_per_episode: int = 64
 
     gamma: float = 0.97
@@ -133,16 +133,27 @@ class RolloutBuffer:
             ret = adv + values
 
             episode_data = {
-                "obs": torch.cat([step["obs"] for step in traj], dim=0),
-                "actions": torch.cat([step["actions"] for step in traj], dim=0),
-                "log_probs": torch.cat([step["log_probs"] for step in traj], dim=0),
-                "action_masks": torch.cat([step["action_masks"] for step in traj], dim=0),
-                "advantages": adv,
-                "returns": ret,
-                "is_team_preview": torch.cat([step["is_team_preview"] for step in traj], dim=0),
+                "obs": torch.cat([step["obs"] for step in traj], dim=0).to(
+                    device, non_blocking=True
+                ),
+                "actions": torch.cat([step["actions"] for step in traj], dim=0).to(
+                    device, non_blocking=True
+                ),
+                "log_probs": torch.cat([step["log_probs"] for step in traj], dim=0).to(
+                    device, non_blocking=True
+                ),
+                "action_masks": torch.cat([step["action_masks"] for step in traj], dim=0).to(
+                    device, non_blocking=True
+                ),
+                "advantages": adv.to(device, non_blocking=True),
+                "returns": ret.to(device, non_blocking=True),
+                "is_team_preview": torch.cat([step["is_team_preview"] for step in traj], dim=0).to(
+                    device, non_blocking=True
+                ),
+                "length": len(traj),
             }
             all_episodes.append(episode_data)
-            all_advantages.append(adv)
+            all_advantages.append(episode_data["advantages"])
 
         # Global normalization of advantages
         if all_advantages:
