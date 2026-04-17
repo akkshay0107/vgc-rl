@@ -8,6 +8,7 @@ from poke_env.battle.effect import Effect
 from poke_env.battle.field import Field
 from poke_env.battle.pokemon import Pokemon
 from poke_env.battle.side_condition import SideCondition
+from poke_env.battle.status import Status
 from poke_env.battle.weather import Weather
 from transformers import BertModel, BertTokenizerFast
 
@@ -211,14 +212,8 @@ def _get_pokemon_obs(
     pokemon_row[21] = pokemon.protect_counter / 4.0
 
     pokemon_row[22] = float(pokemon.first_turn)
-    curr_effects = pokemon.effects
-    pokemon_row[23] = curr_effects.get(Effect.TAUNT, 0) / 3.0
-    pokemon_row[24] = curr_effects.get(Effect.ENCORE, 0) / 3.0
-    pokemon_row[25] = 1.0 if Effect.CONFUSION in curr_effects else 0.0
-    pokemon_row[26] = curr_effects.get(Effect.YAWN, 0) / 2.0
-
-    pokemon_row[27] = pokemon.weight / 300.0  # heaviest pokemon is ursa bm at 330
-    pokemon_row[28] = (orig_idx + 1) / 6.0  # Original team index (1-6) or 0 if unknown/opp
+    pokemon_row[23] = pokemon.weight / 300.0  # heaviest pokemon is ursa bm at 330
+    pokemon_row[24] = (orig_idx + 1) / 6.0  # Original team index (1-6) or 0 if unknown/opp
 
     # one hot of last move used
     if last_move_id and pokemon:
@@ -226,14 +221,29 @@ def _get_pokemon_obs(
         if last_move_id in move_ids:
             move_idx = move_ids.index(last_move_id)
             if move_idx < 4:
-                pokemon_row[29 + move_idx] = 1.0
+                pokemon_row[25 + move_idx] = 1.0
             else:
-                pokemon_row[33] = 1.0
+                pokemon_row[29] = 1.0
         else:
-            pokemon_row[33] = 1.0
+            pokemon_row[29] = 1.0
     else:
-        pokemon_row[33] = 1.0
-    # index 33 is 1 if last move is not known (flinch, switch, etc)
+        pokemon_row[29] = 1.0
+    # index 29 is 1 if last move is not known (flinch, switch, etc)
+
+    # Status one-hot and counter (30-39)
+    statuses = [Status.BRN, Status.FRZ, Status.PAR, Status.PSN, Status.SLP]
+    for i, s in enumerate(statuses):
+        if pokemon.status == s:
+            pokemon_row[30 + i] = 1.0
+            pokemon_row[35 + i] = getattr(pokemon, "status_counter", 0) / 5.0
+
+    # Effects one-hot and counter (40-45)
+    curr_effects = pokemon.effects
+    effects = [Effect.CONFUSION, Effect.TAUNT, Effect.ENCORE]
+    for i, e in enumerate(effects):
+        if e in curr_effects:
+            pokemon_row[40 + i] = 1.0
+            pokemon_row[43 + i] = curr_effects[e] / 5.0
 
     return pokemon_str, pokemon_row
 

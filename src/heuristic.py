@@ -32,14 +32,8 @@ class FuzzyHeuristic(Player):
 
     # Move + ability classes
     REDIRECTION = {"followme", "ragepowder"}
-    SETUP = {
-        "nastyplot",
-        "dragondance",
-        "bulkup",
-        "quiverdance",
-        "curse",
-    }
-    SPEED_CONTROL = {"icywind", "drumbeating", "tailwind", "trickroom", "electroweb"}
+    SETUP = {"nastyplot", "bulkup"}
+    SPEED_CONTROL = {"icywind", "drumbeating", "tailwind", "trickroom"}
     SPREAD = {
         "makeitrain",
         "eruption",
@@ -50,14 +44,72 @@ class FuzzyHeuristic(Player):
         "hypervoice",
         "muddywater",
         "blizzard",
-        "snarl",
         "icywind",
         "expandingforce",
     }
     PIVOT = {"uturn", "partingshot"}
-    STAT_DROPPING = {"icywind", "partingshot", "drumbeating"}
-    PLUS_PRIORITY = {"extremespeed", "grassyglide", "suckerpunch", "aquajet", "fakeout"}
-    GAMBLES = {"direclaw", "fissure"}
+    STAT_DROPPING = {"icywind", "partingshot", "drumbeating", "faketears"}
+    PLUS_PRIORITY = {
+        "extremespeed",
+        "grassyglide",
+        "aquajet",
+        "fakeout",
+        "feint",
+        "vacuumwave",
+    }
+    GAMBLES = {"direclaw"}
+    PROTECT = {"protect", "detect"}
+    FIELD_SELF_MOVES = {
+        "tailwind",
+        "trickroom",
+        "haze",
+        "auroraveil",
+        "sunnyday",
+    }
+    NO_TARGET_STATUS = {"followme", "ragepowder", "wideguard"}
+    OPPONENT_TARGETED = {"taunt", "encore", "spore", "faketears", "partingshot"}
+    ALLY_TARGETED = {"helpinghand", "coaching", "pollenpuff"}
+    FIXED_DAMAGE = {"nightshade"}
+
+    # for team preview heuristics
+    TEAM_CORES = {
+        "hatterene": {"hatterene", "indeedee-f"},
+        "annihilape": {"annihilape", "maushold-four"},
+        "pelipper": {"archaludon", "pelipper"},
+        "sneasler": {"rillaboom", "gholdengo"},
+        "typhlosion-hisui": {"typhlosion-hisui", "whimsicott"},
+        "porygon2": {"porygon2", "ursaluna"},
+    }
+
+    LEAD_BIAS = {
+        "incineroar": 0.5,  # fake-out + intimidate
+        "rillaboom": 0.4,  # fake-out + terrain
+        "maushold": 0.3,  # follow-me + taunt
+        "maushold-four": 0.3,
+        "indeedee-f": 0.4,  # psychic surge + follow-me + TR
+        "hatterene": 0.2,  # TR setter
+        "gallade": 0.1,  # TR setter
+        "whimsicott": 0.4,  # prankster tailwind lead
+        "pelipper": 0.25,  #  rain setter
+        "ninetales-alola": 0.25,  # snow + aurora veil lead
+        "arcanine-hisui": 0.3,  # intimidate
+        "sneasler": 0.4,  # fake-out + unburden
+        "typhlosion-hisui": 0.4,  # specs eruption
+        "kilowattrel": 0.4,  # tailwind lead
+        "farigiraf": 0.2,
+        "porygon2": 0.2,
+        "amoonguss": 0.2,
+        "flamigo": 0.1,
+        "annihilape": 0.3,  # anti incin lead
+        "archaludon": 0.1,
+        "gholdengo": 0.3,
+        "dragonite": 0.0,
+        "torkoal": -0.1,
+        "ursaluna-bloodmoon": -0.2,
+        "ursaluna": -0.4,
+        "basculegion": -0.4,
+    }
+
     WEATHER_ABILITIES = {"FIRE": "drought", "WATER": "drizzle", "ICE": "snowwarning"}
     TERRAIN_ABILITIES = {"GRASS": "grassysurge", "PSYCHIC": "psychicsurge"}
     ABILITY_TO_WEATHER = {v: k for k, v in WEATHER_ABILITIES.items()}
@@ -85,59 +137,6 @@ class FuzzyHeuristic(Player):
     TERRAIN_TYPE = {
         Field.GRASSY_TERRAIN: "GRASS",
         Field.PSYCHIC_TERRAIN: "PSYCHIC",
-    }
-    PROTECT = {
-        "protect",
-        "detect",
-        "spikyshield",
-        "banefulbunker",
-        "kingsshield",
-        "obstruct",
-        "silktrap",
-    }
-    FIELD_SELF_MOVES = {
-        "tailwind",
-        "trickroom",
-        "haze",
-        "auroraveil",
-    }
-    OPPONENT_TARGETED = {"taunt", "encore", "yawn"}
-    ALLY_TARGETED = {"helpinghand", "followme", "ragepowder", "wideguard", "coaching"}
-
-    # for team preview heuristics
-    TEAM_CORES = {
-        "basculegion": {"gholdengo", "dragonite"},  # DUG core
-        "hatterene": {"hatterene", "indeedee-f"},  # TR setters
-        "annihilape": {"annihilape", "maushold-four"},  # Beat Up + Rage Fist core
-        "pelipper": {"archaludon", "pelipper"},  # rain core
-        "ninetales-alola": {"gholdengo", "rillaboom"},  # grassy seed
-        "kingambit": {"volcarona", "clefable"},  # quiver dance + follow me
-    }
-
-    LEAD_BIAS = {
-        "incineroar": 0.5,  # fake-out + intimidate
-        "rillaboom": 0.4,  # fake-out + terrain
-        "maushold": 0.3,  # follow-me + taunt
-        "indeedee-f": 0.4,  # psychic surge + follow-me + TR
-        "hatterene": 0.2,  # TR setter
-        "gallade": 0.1,  # TR setter
-        "whimsicott": 0.4,  # prankster tailwind lead
-        "pelipper": 0.25,  #  rain setter
-        "ninetales-alola": 0.25,  # snow + aurora veil lead
-        "arcanine-hisui": 0.3,  # intimidate
-        "clefable": 0.2,  # follow-me support
-        "sneasler": 0.3,  # fake-out
-        "ursaluna": -0.2,  # TR abuser, prefers back slot
-        "ursaluna-bloodmoon": -0.1,
-        "kingambit": -0.2,
-        "volcarona": 0.2,
-        "gholdengo": 0.2,
-        "basculegion": -0.2,  # last respects sweeping
-        "dondozo": -0.3,
-        "annihilape": 0.1,  # can lead or back
-        "archaludon": 0.1,
-        "torkoal": 0.2,  # slowest setter but valid as back in TR
-        "dragonite": 0.0,
     }
 
     def __init__(self, k: int = 4, *args, **kwargs):
@@ -191,15 +190,20 @@ class FuzzyHeuristic(Player):
         if move.category == MoveCategory.STATUS:
             return 0.0
 
-        if move.id == "superfang":
-            type_mult = defender.damage_multiplier(move)
-            if type_mult == 0:
-                return 0.0
+        type_mult = self._type_multiplier(attacker, defender, move)
+        if type_mult == 0:
+            return 0.0
 
+        if move.id == "superfang":
             return 0.5 * self._safe_hp_fraction(defender)
 
+        if move.id in self.FIXED_DAMAGE:
+            return attacker.level / (
+                defender.max_hp if (defender.max_hp and defender.max_hp > 0) else 100
+            )
+
         power = move.base_power
-        if move.id in ["eruption", "waterspout"]:
+        if move.id in {"eruption", "waterspout"}:
             power = 150 * self._safe_hp_fraction(attacker)
             is_slower = self._is_slower_than_opponents(battle, attacker)
             tr_active = self._trickroom_turns(battle) > 0
@@ -209,14 +213,17 @@ class FuzzyHeuristic(Player):
             power = 60
 
         level = attacker.level
-        if move.category == MoveCategory.PHYSICAL:
+        move_type = self._effective_move_type(attacker, move)
+        category = self._effective_move_category(attacker, move)
+
+        if category == MoveCategory.PHYSICAL:
             a_stat = self._safe_stat(attacker, "atk")
             d_stat = self._safe_stat(defender, "def")
             a_boost = self._safe_boost(attacker, "atk")
             d_boost = self._safe_boost(defender, "def")
             if attacker.ability == "guts" and attacker.status:
                 a_stat = int(a_stat * 1.5)
-        else:  # SPECIAL
+        else:
             a_stat = self._safe_stat(attacker, "spa")
             d_stat = self._safe_stat(defender, "spd")
             a_boost = self._safe_boost(attacker, "spa")
@@ -225,44 +232,33 @@ class FuzzyHeuristic(Player):
         a_stat = int(a_stat * self._get_boost_mult(a_boost))
         d_stat = int(d_stat * self._get_boost_mult(d_boost))
 
-        # snow defense boost
-        if PokemonType.ICE in defender.types:
-            if Weather.SNOW in battle.weather:
-                if move.category == MoveCategory.PHYSICAL:
-                    d_stat *= 1.5
+        if (
+            PokemonType.ICE in defender.types
+            and Weather.SNOW in battle.weather
+            and category == MoveCategory.PHYSICAL
+        ):
+            d_stat *= 1.5
 
-        # damage formula
         damage = (((2 * level / 5) + 2) * power * a_stat / d_stat) / 50 + 2
         if hits_multiple:
             damage *= 0.75
 
-        # weather multiplier
         weather_type, _ = self._active_weather_type(battle)
         if weather_type == "FIRE":
-            if move.type == PokemonType.FIRE:
+            if move_type == PokemonType.FIRE:
                 damage *= 1.5
-            elif move.type == PokemonType.WATER:
+            elif move_type == PokemonType.WATER:
                 damage *= 0.5
         elif weather_type == "WATER":
-            if move.type == PokemonType.WATER:
+            if move_type == PokemonType.WATER:
                 damage *= 1.5
-            elif move.type == PokemonType.FIRE:
+            elif move_type == PokemonType.FIRE:
                 damage *= 0.5
 
-        damage *= self._stab_multiplier(attacker, move)
-        type_mult = defender.damage_multiplier(move)
-        if type_mult == 0:
-            if (
-                # use the can hit ghost helper here
-                (move.id == "bloodmoon" or attacker.ability in ["scrappy", "mindseye"])
-                and (move.type == PokemonType.NORMAL or move.type == PokemonType.FIGHTING)
-                and (PokemonType.GHOST in defender.types)
-            ):
-                type_mult = 1.0
+        damage *= self._stab_multiplier(attacker, move, move_type)
         damage *= type_mult
 
-        # burn multiplier
-        if attacker.status == "brn" and move.category == MoveCategory.PHYSICAL:
+        if attacker.status == "brn" and category == MoveCategory.PHYSICAL:
             if attacker.ability != "guts" and move.id != "facade":
                 damage *= 0.5
 
@@ -521,6 +517,13 @@ class FuzzyHeuristic(Player):
         if not targets:
             return -10.0
 
+        if move.id == "pollenpuff" and len(targets) == 1:
+            t = targets[0]
+            if t is None or t.fainted:
+                return -10.0
+            if t in battle.active_pokemon:
+                return self._healing_value(t, battle)
+
         total_rating = 0.0
         hits_multiple = len(targets) > 1
         for t in targets:
@@ -549,6 +552,8 @@ class FuzzyHeuristic(Player):
                 if t is None or t.fainted or t in battle.active_pokemon:
                     return -10.0
                 if self._is_immune_to_fake_out(t):
+                    return -5.0
+                if self._blocks_priority(mon, t, battle):
                     return -5.0
                 rating += 0.5
 
@@ -587,7 +592,12 @@ class FuzzyHeuristic(Player):
         elif move.id in self.ALLY_TARGETED:
             if target is None or target.fainted or target in battle.opponent_active_pokemon:
                 return -10.0
-        elif move.id in self.FIELD_SELF_MOVES or move.id in self.PROTECT or move.id in self.SETUP:
+        elif (
+            move.id in self.FIELD_SELF_MOVES
+            or move.id in self.PROTECT
+            or move.id in self.SETUP
+            or move.id in self.NO_TARGET_STATUS
+        ):
             # target is irrelevant for these
             pass
         else:
@@ -638,6 +648,8 @@ class FuzzyHeuristic(Player):
         elif move.id == "taunt":
             if target is None:
                 return -10.0
+            if self._is_status_immune_target(target, mon, battle):
+                return -5.0
             if Effect.TAUNT in target.effects:
                 return -5.0
             if self._is_immune_to_prankster(target) and mon.ability == "prankster":
@@ -653,6 +665,8 @@ class FuzzyHeuristic(Player):
         elif move.id == "encore":
             if target is None:
                 return -10.0
+            if self._is_status_immune_target(target, mon, battle):
+                return -5.0
             if Effect.ENCORE in target.effects:
                 return -5.0
             if self._is_immune_to_prankster(target) and mon.ability == "prankster":
@@ -702,7 +716,97 @@ class FuzzyHeuristic(Player):
             score += 0.25
 
         elif move.id == "helpinghand":
-            return 0.05
+            if target is None or target.fainted:
+                return -10.0
+            best_damage = 0.0
+            for mv in target.moves.values():
+                if mv.category == MoveCategory.STATUS:
+                    continue
+                for opp in battle.opponent_active_pokemon:
+                    if opp and not opp.fainted:
+                        best_damage = max(best_damage, self._calculate_damage(mv, target, opp, battle))
+            return 0.10 + 0.35 * best_damage
+
+        elif move.id in {"followme", "ragepowder"}:
+            pressure = sum(self._get_defensive_rating(battle, ally) for ally in battle.active_pokemon if ally)
+            bonus = 0.0
+            partner = battle.active_pokemon[1 - pos]
+            if partner and not partner.fainted:
+                partner_moves = {mv.id for mv in partner.moves.values()}
+                if "trickroom" in partner_moves:
+                    bonus += 0.35
+                elif self.SETUP.intersection(partner_moves):
+                    bonus += 0.25
+            score = 0.18 + 0.18 * pressure + bonus
+            if move.id == "ragepowder" and any(
+                op and op.ability == "overcoat" for op in battle.opponent_active_pokemon
+            ):
+                score -= 0.10
+            return score
+
+        elif move.id == "spore":
+            if target is None:
+                return -10.0
+            if self._is_status_immune_target(target, mon, battle):
+                return -5.0
+            if self._is_immune_to_spore(target, mon, battle):
+                return -5.0
+            if target.status is not None:
+                return -5.0
+
+            threat = 0.0
+            for mv in target.moves.values():
+                if mv.category == MoveCategory.STATUS:
+                    continue
+                for ally in battle.active_pokemon:
+                    if ally and not ally.fainted:
+                        threat = max(
+                            threat,
+                            self._calculate_damage(
+                                mv, target, ally, battle, hits_multiple=(mv.id in self.SPREAD)
+                            ),
+                        )
+            return 0.35 + 0.5 * threat
+
+        elif move.id == "faketears":
+            if target is None:
+                return -10.0
+            if self._is_status_immune_target(target, mon, battle):
+                return -5.0
+
+            special_pressure = 0.0
+            for ally in battle.active_pokemon:
+                if ally is None or ally.fainted or ally == mon:
+                    continue
+                if self._safe_stat(ally, "spa") <= self._safe_stat(ally, "atk"):
+                    continue
+                for mv in ally.moves.values():
+                    if mv.category == MoveCategory.SPECIAL:
+                        special_pressure = max(
+                            special_pressure, self._calculate_damage(mv, ally, target, battle)
+                        )
+
+            self_pressure = 0.0
+            if self._safe_stat(mon, "spa") > self._safe_stat(mon, "atk"):
+                for mv in mon.moves.values():
+                    if mv.category == MoveCategory.SPECIAL:
+                        self_pressure = max(
+                            self_pressure, self._calculate_damage(mv, mon, target, battle)
+                        )
+
+            return 0.12 + 0.22 * max(special_pressure, self_pressure)
+
+        elif move.id == "coaching":
+            if target is None or target.fainted:
+                return -10.0
+            if self._safe_stat(target, "atk") < self._safe_stat(target, "spa"):
+                return -1.0
+            atk_boost = self._safe_boost(target, "atk")
+            def_boost = self._safe_boost(target, "def")
+            if atk_boost >= 3 and def_boost >= 3:
+                return -2.0
+            partner_pressure = self._get_defensive_rating(battle, target)
+            return 0.18 + 0.08 * max(0, 2 - atk_boost) + 0.12 * (0.8 - partner_pressure)
 
         elif move.id == "wideguard":
             pressure = 0.0
@@ -730,25 +834,76 @@ class FuzzyHeuristic(Player):
             pressure = sum(self._get_defensive_rating(battle, p) for p in allies)
             score = 0.4 + 0.1 * pressure
 
-        elif move.id == "yawn":
-            if target is None:
-                return -10.0
-            if target.status is not None:
+        elif move.id == "recover":
+            hp_frac = self._safe_hp_fraction(mon)
+            if hp_frac > 0.8:
                 return -5.0
-            score = 0.20
-            avg_outgoing = 0.0
+            score = self._healing_value(mon, battle)
+            if self._get_defensive_rating(battle, mon) > 0.9 and hp_frac < 0.35:
+                score -= 0.2
+            return score
+
+        elif move.id == "sunnyday":
+            weather_type, turns = self._active_weather_type(battle)
+            if weather_type == "FIRE" and turns > 1:
+                return -5.0
+
+            ally_fire = 0.0
+            ally_sun_bonus = 0.0
+            for ally in battle.active_pokemon:
+                if ally is None or ally.fainted:
+                    continue
+                for mv in ally.moves.values():
+                    if mv.category == MoveCategory.STATUS:
+                        continue
+                    if mv.type == PokemonType.FIRE:
+                        ally_fire = 0.16
+
+            opp_water = 0.0
+            for op in battle.opponent_active_pokemon:
+                if op is None or op.fainted:
+                    continue
+                for mv in op.moves.values():
+                    if mv.category != MoveCategory.STATUS and mv.type == PokemonType.WATER:
+                        opp_water = 0.16
+
+            score = 0.15 + ally_fire + ally_sun_bonus + opp_water
+            if weather_type == "WATER":
+                score += 0.25
+            return score
+
+        elif move.id == "partingshot":
+            if target is None or target.fainted or target in battle.active_pokemon:
+                return -10.0
+            if self._is_status_immune_target(target, mon, battle):
+                return -5.0
+
+            if target.ability in {"defiant", "competitive"}:
+                return -5.0
+            if target.ability in {"clearbody", "whitesmoke", "fullmetalbody"}:
+                return -2.0
+            if getattr(target, "item", "") == "clearamulet":
+                return -2.0
+
+            threat = 0.0
             count = 0
             for mv in target.moves.values():
-                if mv.category != MoveCategory.STATUS:
-                    for ally in battle.active_pokemon:
-                        if ally and not ally.fainted:
-                            avg_outgoing += self._calculate_damage(mv, target, ally, battle)
-                            count += 1
+                if mv.category == MoveCategory.STATUS:
+                    continue
+                for ally in battle.active_pokemon:
+                    if ally and not ally.fainted:
+                        threat += self._calculate_damage(
+                            mv, target, ally, battle, hits_multiple=(mv.id in self.SPREAD)
+                        )
+                        count += 1
             if count > 0:
-                avg_outgoing /= count
-                score += max(0.0, 0.25 - avg_outgoing)
-            if target.protect_counter > 0:
-                score += 0.15
+                threat /= count
+
+            pivot = min(0.35, self._get_defensive_rating(battle, mon))
+            score = 0.20 + 0.8 * threat + pivot
+            score += 0.08 * max(0, self._safe_boost(target, "atk"))
+            score += 0.08 * max(0, self._safe_boost(target, "spa"))
+            return score
 
         return score
 
@@ -1266,10 +1421,54 @@ class FuzzyHeuristic(Player):
             return True
         return False
 
+    def _blocks_priority(
+        self, attacker: Pokemon, target: Pokemon | None, battle: DoubleBattle
+    ) -> bool:
+        if target is None:
+            return False
+        if Field.PSYCHIC_TERRAIN in battle.fields and not battle.is_grounded(attacker):
+            return False
+        if Field.PSYCHIC_TERRAIN in battle.fields and battle.is_grounded(target):
+            return True
+
+        target_side = (
+            battle.opponent_active_pokemon if target in battle.opponent_active_pokemon else battle.active_pokemon
+        )
+        for mon in target_side:
+            if mon and not mon.fainted and mon.ability in {"armortail", "queenlymajesty", "dazzling"}:
+                return True
+        return False
+
     def _is_immune_to_prankster(self, opp: Pokemon | None) -> bool:
         if opp is None:
             return False
         if PokemonType.DARK in opp.types:
+            return True
+        return False
+
+    def _is_status_immune_target(
+        self, target: Pokemon | None, attacker: Pokemon, battle: DoubleBattle
+    ) -> bool:
+        if target is None:
+            return False
+        if target.ability == "goodasgold":
+            return True
+        if self._is_immune_to_prankster(target) and attacker.ability == "prankster":
+            return True
+        return False
+
+    def _is_immune_to_spore(
+        self, target: Pokemon | None, attacker: Pokemon, battle: DoubleBattle
+    ) -> bool:
+        if target is None:
+            return False
+        if PokemonType.GRASS in target.types:
+            return True
+        if target.ability in {"overcoat", "insomnia", "vitalspirit", "sweetveil"}:
+            return True
+        if getattr(target, "item", "") == "safetygoggles":
+            return True
+        if Field.ELECTRIC_TERRAIN in battle.fields and battle.is_grounded(target):
             return True
         return False
 
@@ -1312,19 +1511,57 @@ class FuzzyHeuristic(Player):
             return max(0, 5 - (battle.turn - start_turn))
         return 0
 
-    def _stab_multiplier(self, mon: Pokemon, move: Move) -> float:
-        is_original_stab = move.type in mon.original_types
+    def _stab_multiplier(
+        self,
+        mon: Pokemon,
+        move: Move,
+        move_type: PokemonType | None = None,
+    ) -> float:
+        move_type = move.type if move_type is None else move_type
+        is_original_stab = move_type in mon.original_types
 
         if not mon.is_terastallized:
             return mon.stab_multiplier if is_original_stab else 1.0
 
-        if move.type == mon.tera_type:
+        if move_type == mon.tera_type:
             return mon.stab_multiplier
 
         if is_original_stab:
             return 2.0 if mon.ability == "adaptability" else 1.5
 
         return 1.0
+
+    def _effective_move_type(self, mon: Pokemon, move: Move) -> PokemonType:
+        if move.id == "terablast" and mon.is_terastallized and mon.tera_type is not None:
+            return mon.tera_type
+        return move.type
+
+    def _effective_move_category(self, mon: Pokemon, move: Move) -> MoveCategory:
+        if move.id == "terablast" and mon.is_terastallized:
+            atk = self._safe_stat(mon, "atk") * self._get_boost_mult(self._safe_boost(mon, "atk"))
+            spa = self._safe_stat(mon, "spa") * self._get_boost_mult(self._safe_boost(mon, "spa"))
+            return MoveCategory.PHYSICAL if atk > spa else MoveCategory.SPECIAL
+        return move.category
+
+    def _type_multiplier(self, attacker: Pokemon, defender: Pokemon, move: Move) -> float:
+        move_type = self._effective_move_type(attacker, move)
+        type_mult = defender.damage_multiplier(move_type)
+        if (
+            type_mult == 0
+            and move_type in {PokemonType.NORMAL, PokemonType.FIGHTING}
+            and PokemonType.GHOST in defender.types
+            and self._can_hit_ghost_with_normal_fighting(attacker)
+        ):
+            return 1.0
+        return type_mult
+
+    def _healing_value(self, target: Pokemon, battle: DoubleBattle) -> float:
+        missing = max(0.0, 1.0 - self._safe_hp_fraction(target))
+        if missing <= 0:
+            return -0.2
+        heal_pct = min(0.5, missing)
+        pressure = self._get_defensive_rating(battle, target)
+        return heal_pct * (0.6 + 0.3 * pressure)
 
     def _get_boost_mult(self, boost: int) -> float:
         return self.BOOST_MULT[int(boost) + 6]
