@@ -1,89 +1,135 @@
-# VGC-RL
+# vgc-rl
 
-`WIKI.md` for all resources used.
+Setup and run guide for the training pipeline:
 
-VGC-RL is a reinforcement learning project aimed at developing a competent AI agent to play Pokémon VGC battles. The project uses the `poke-env` library to interact with a Pokemon Showdown server to play out games.
+`replay_gen -> behaviour cloning seed -> PPO train loop`
 
-## Project Overview
+## Prereqs
 
-The core idea is to train an agent that can analyze complex Pokémon battle states and make optimal decisions (e.g., choosing moves, switching Pokémon) to win battles. This involves:
-
-1.  **Environment Interaction:** Using `poke-env` to simulate VGC battles against opponents (self play or against heuristics).
-2.  **State Encoding:** Converting the battle state (Pokémon stats, moves, abilities, field conditions, etc.) into a numerical representation suitable for a neural network. This is achieved using the `TinyBERT` model to embed textual descriptions into vectors and concatenating with numerical features.
-3.  **Policy Learning:** Training a deep neural network (`PolicyNet`) to learn a policy that maps encoded states to actions, aiming to maximize win rates.
-4.  **Training Loop:** Implementing a robust training process using actor-critic methods and a replay buffer to continuously improve the agent's performance.
-
-In order to reduce the large number of initial states possible to a manageable amount, the current implemenation of the project considers a fixed metagame of 6 teams with open team sheets, all from Regulation H 2.0 from Pokemon S/V (which was the latest format at the start of building out the project). 
-
-## Project Structure
-
-*   **`src/env.py`**: Defines `Gen9VGCEnv`, a Gymnasium-compatible environment built using code from `poke-env`. It handles the battle logic, action space definition specific to Doubles Battles for Gen 9. It also defines `SimEnv`, a complete implementation of the `Gen9VGCEnv` with reward calculation and observation embedding.
-*   **`src/encoder.py`**: Responsible for transforming the raw battle state from `poke-env` into a structured observation for the `PolicyNet`. It uses a pre-trained `TinyBERT` model to encode textual descriptions of Pokémon, moves, and items, combined with numerical features.
-*   **`src/policy.py`**: Implements the `PolicyNet`, a neural network that takes the encoded battle state as input. It features a shared backbone and separate heads for predicting action probabilities (policy) and estimating the state's value (value function).
-*   **`src/rl_player.py`**: An extension of `poke-env`'s `Player` class that integrates the trained `PolicyNet` to make decisions during battles. It handles the conversion of network outputs back into `poke-env` battle orders.
-*   **`src/train_loop.py`**: Describes the training loop, including environment interaction, experience collection (into a replay buffer), policy updates using an actor-critic algorithm in Pytorch, and checkpoint management.
-*   **`src/teams.py`**: Provides functionality to load random teams from the list of teams in `teams/` for battle simulations.
-*   **`src/lookups.py`**: Contains static data (dictionaries) for Pokémon, item, and move descriptions, used by the `encoder.py` to generate rich textual inputs for the `TinyBERT` model.
-
-
-![Project Architecture](assets/arch-1.png)
-
-## Training Loop
-
-The training process is implemented in `src/train_loop.py` and follows a standard reinforcement learning paradigm:
-
-1.  **Environment Interaction:** The `RLPlayer` interacts with the `Gen9VGCEnv`, taking actions based on its current policy and receiving observations and rewards.
-2.  **Experience Collection:** Each interaction (state, action, reward, next state, done) is stored in a replay buffer.
-3.  **Policy Update:** Periodically, batches of experiences are sampled from the replay buffer. The `PolicyNet` is updated using an actor-critic loss function, which combines a policy loss (to improve action selection) and a value loss (to improve state value estimation) and an entropy term to reward exploring different policies (similar to SAC but with a fixed entropy coefficient).
-4.  **Checkpointing:** The model's state is saved every 10 epochs under the `checkpoints`, allowing for training to be resumed or for evaluating different policy versions.
-
-
-![Training Loop](assets/train_loop-1.png)
-
-## Installation procedure
-
-Clone the repo and initialize the pokemon-showdown submodule
+If you cloned the repo without submodules, initialize them first:
 
 ```bash
-git clone https://github.com/akkshay0107/vgc-rl.git
-git submodule init
 git submodule update --init --recursive
 ```
 
-#### uv setup
+## Python setup with uv
 
-- Install uv (see https://docs.astral.sh/uv/getting-started/installation/)
+Install Python 3.13 into `uv` if you do not already have it:
 
-- Install all dependencies
+```bash
+uv python install 3.13
+```
+
+Create the virtualenv and install Python dependencies from `pyproject.toml` / `uv.lock`:
 
 ```bash
 uv sync
-uv pip install .
 ```
 
-- Run code through the venv (Alternatively, activate venv manually and use regular python commands)
+From here on, run Python commands through `uv`:
 
 ```bash
-uv run <command> [args..]
+uv run python <script>
 ```
 
-#### Local showdown server setup
+## Pokemon Showdown setup
 
-From the root of the project,
+The project battles against a local Pokemon Showdown server.
+
+Install the server dependencies once:
 
 ```bash
 cd pokemon-showdown
-npm i # first time install
+npm install
+cd ..
+```
+
+For replay generation, start one local server in a separate terminal:
+
+```bash
+cd pokemon-showdown
 node pokemon-showdown start --no-security
 ```
 
-It should default to starting the server at port 8000. Turn off any browser shields / blocker and retry if server fails to load properly.
+That uses port `8000` by default, which matches the replay generation scripts.
 
-## Results (so far)
+## Pipeline
 
-Our of end of semester work has been summarised in a [poster](assets/MLP_Poster.pdf) we made.
+### Generate replay data
 
-| Opponent | Winrate |
-| -------- | ------- |
-| RandomPlayer | 89.2% |
-| MaxBasePowerPlayer | 38% |
+Run this from the repo root while the local Showdown server is running:
+
+```bash
+uv run python src/replay_gen.py -n <number of replays>
+```
+
+This writes replay shards under:
+
+- `replays/fuzzy_heuristic/`
+- `replays/simple_heuristic/`
+- `replays/max_base_power/`
+
+Increase `-n` if you want more expert trajectories.
+
+### Seed the opponent pool with behaviour cloning
+
+Train behaviour-cloned policies from those replay folders:
+
+```bash
+uv run python src/seed_pool.py
+```
+
+This creates seed checkpoints in:
+
+- `checkpoints/pool/seed_max_base_power.pt`
+- `checkpoints/pool/seed_simple_heuristic.pt`
+- `checkpoints/pool/seed_fuzzy_heuristic.pt`
+
+`src/train_loop.py` will automatically bootstrap from `seed_fuzzy_heuristic.pt` if there is no PPO checkpoint yet.
+
+### Run the PPO training loop
+
+Start training from the repo root:
+
+```bash
+uv run python src/train_loop.py
+```
+
+`train_loop.py` starts its own local Showdown processes, so you do not need to manually start the server for this step.
+
+Training outputs:
+
+- main checkpoint: `checkpoints/ppo_checkpoint.pt`
+- opponent snapshots: `checkpoints/pool/`
+- TensorBoard logs: `runs/ppo_training/`
+- text log: `training.log`
+
+## PPO config
+
+Training reads optional overrides from `.ppoconfig` in the repo root.
+
+Current local example (for my CPU):
+
+```text
+num_episodes=4
+num_envs=1
+n_jobs=2
+batch_size=4
+```
+
+If `.ppoconfig` is missing, defaults from `src/ppo_utils.py` are used.
+
+## Typical run order
+
+```bash
+uv sync
+cd pokemon-showdown && npm install && cd ..
+
+# terminal 1
+cd pokemon-showdown && node pokemon-showdown start --no-security
+
+# terminal 2
+uv run python src/replay_gen.py -n <number of replays>
+uv run python src/seed_pool.py
+uv run python src/train_loop.py
+```
