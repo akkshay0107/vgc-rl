@@ -16,7 +16,7 @@ class PolicyNet(nn.Module):
         d_model=256,
         nhead=8,
         nlayer=3,
-        net_arch=(256, 256),
+        net_arch=(256, 256, 128),
         n_hg=4,
     ):
         super().__init__()
@@ -25,9 +25,9 @@ class PolicyNet(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.reducer = CLSReducer(self.seq_len, self.feat_dim, d_model, nhead, nlayer, n_hg=n_hg)
 
-        layers = [nn.Linear(d_model, net_arch[0]), nn.ReLU()]
+        layers = [nn.Linear(d_model, net_arch[0]), nn.GELU()]
         for h_in, h_out in zip(net_arch[:-1], net_arch[1:]):
-            layers.extend([nn.Linear(h_in, h_out), nn.ReLU()])
+            layers.extend([nn.Linear(h_in, h_out), nn.GELU()])
         self.shared_backbone = nn.Sequential(*layers)
 
         # outputs logits for each possible action for each pokemon
@@ -41,8 +41,6 @@ class PolicyNet(nn.Module):
     @torch.no_grad()
     def _init_weights(self):
         # orthogonal initialization of the network
-        gain_hidden = init.calculate_gain("relu")
-
         init.orthogonal_(self.policy_head.weight, gain=0.1)
         init.zeros_(self.policy_head.bias)
 
@@ -51,7 +49,7 @@ class PolicyNet(nn.Module):
 
         for module in self.shared_backbone:
             if isinstance(module, nn.Linear):
-                init.orthogonal_(module.weight, gain=gain_hidden)
+                init.orthogonal_(module.weight, gain=1.0)
                 init.zeros_(module.bias)
 
     def forward(
