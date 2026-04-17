@@ -305,7 +305,13 @@ def _run_batched_ppo(
     if not episodes:
         return (
             torch.tensor(0.0, device=device),
-            {"policy_loss": 0.0, "value_loss": 0.0, "entropy_loss": 0.0, "kl_div": 0.0},
+            {
+                "policy_loss": 0.0,
+                "value_loss": 0.0,
+                "entropy_loss": 0.0,
+                "kl_div": 0.0,
+                "clip_frac": 0.0,
+            },
             0,
         )
 
@@ -323,7 +329,13 @@ def _run_batched_ppo(
 
     state = initial_state(policy, batch_size, device)
     total_loss = torch.tensor(0.0, device=device)
-    metrics = {"policy_loss": 0.0, "value_loss": 0.0, "entropy_loss": 0.0, "kl_div": 0.0}
+    metrics = {
+        "policy_loss": 0.0,
+        "value_loss": 0.0,
+        "entropy_loss": 0.0,
+        "kl_div": 0.0,
+        "clip_frac": 0.0,
+    }
     total_steps = 0
 
     for t in range(max_steps):
@@ -382,7 +394,9 @@ def _run_batched_ppo(
             metrics["policy_loss"] += step_policy_loss.sum().item()
             metrics["value_loss"] += step_value_loss.sum().item()
             metrics["entropy_loss"] += step_entropy_loss.sum().item()
-            metrics["kl_div"] += (old_log_probs_t - curr_log_prob).sum().item()
+            # schulman kl approx (was having negative kl in early steps)
+            metrics["kl_div"] += ((ratio - 1) - log_ratio).sum().item()
+            metrics["clip_frac"] += ((ratio - 1.0).abs() > config.clip_range).float().sum().item()
 
     return total_loss, metrics, total_steps
 
@@ -392,10 +406,12 @@ def ppo_update(episodes: list) -> dict:
     t0 = time.time()
 
     tot_policy_loss = 0.0
-    tot_value_loss = 0.0
     tot_entropy_loss = 0.0
     tot_kl_div = 0.0
+    tot_grad_norm = 0.0
+    tot_clip_frac = 0.0
     tot_steps = 0
+    num_updates = 0
     epochs_done = 0
 
     early_stop = False
@@ -421,11 +437,16 @@ def ppo_update(episodes: list) -> dict:
             tot_value_loss += batch_metrics["value_loss"]
             tot_entropy_loss += batch_metrics["entropy_loss"]
             epoch_kl += batch_metrics["kl_div"]
+            tot_clip_frac += batch_metrics["clip_frac"]
 
             if batch_steps > 0:
                 (batch_loss / batch_steps).backward()
-                torch.nn.utils.clip_grad_norm_(policy.parameters(), config.max_grad_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    policy.parameters(), config.max_grad_norm
+                )
+                tot_grad_norm += grad_norm.item()
                 optimizer.step()
+                num_updates += 1
 
             epoch_steps += batch_steps
 
@@ -450,6 +471,8 @@ def ppo_update(episodes: list) -> dict:
             "value_loss": 0.0,
             "entropy_loss": 0.0,
             "kl_divergence": 0.0,
+            "grad_norm": 0.0,
+            "clip_fraction": 0.0,
             "time": time.time() - t0,
         }
 
@@ -458,6 +481,8 @@ def ppo_update(episodes: list) -> dict:
         "value_loss": tot_value_loss / tot_steps,
         "entropy_loss": tot_entropy_loss / tot_steps,
         "kl_divergence": tot_kl_div / tot_steps,
+        "grad_norm": tot_grad_norm / num_updates if num_updates > 0 else 0.0,
+        "clip_fraction": tot_clip_frac / tot_steps,
         "time": time.time() - t0,
     }
 
@@ -548,6 +573,8 @@ def main():
             tb_writer.add_scalar("Loss/Value", stats["value_loss"], episode + 1)
             tb_writer.add_scalar("Loss/Entropy", stats["entropy_loss"], episode + 1)
             tb_writer.add_scalar("Training/KL_Divergence", stats["kl_divergence"], episode + 1)
+            tb_writer.add_scalar("Training/GradNorm", stats["grad_norm"], episode + 1)
+            tb_writer.add_scalar("Training/ClipFraction", stats["clip_fraction"], episode + 1)
             tb_writer.add_scalar("Training/LearningRate", current_lr, episode + 1)
             tb_writer.add_scalar("Timing/Rollout", rollout_time, episode + 1)
             tb_writer.add_scalar("Timing/Update", stats["time"], episode + 1)
@@ -555,10 +582,13 @@ def main():
 
             logging.info(
                 f"Episode {episode + 1}/{config.num_episodes} | "
-                f"Pool WR: {rollout_stats['pool_win_rate']:.2%} | "
-                f"Self WR: {rollout_stats['self_win_rate']:.2%} | "
-                f"Rollout: {rollout_time:.2f}s | "
-                f"Policy Loss: {stats['policy_loss']:.4f} | "
+                f"Pool WR: {rollout_stats['pool_win_rate']:.1%} | "
+                f"Self WR: {rollout_stats['self_win_rate']:.1%} | "
+                f"P-Loss: {stats['policy_loss']:.4f} | "
+                f"V-Loss: {stats['value_loss']:.4f} | "
+                f"Ent: {stats['entropy_loss']:.4f} | "
+                f"Grad: {stats['grad_norm']:.2f} | "
+                f"Clip: {stats['clip_fraction']:.2%} | "
                 f"KL: {stats['kl_divergence']:.4f}"
             )
 
