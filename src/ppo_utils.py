@@ -257,10 +257,19 @@ class OpponentPool:
     def add(self, policy: PolicyNet, opponent_id: str) -> None:
         model = unwrap_policy(policy)
 
-        # Evict oldest if at capacity.
+        # evict lowest winrate
         while len(self.opponent_ids) >= self.config.pool_size:
-            evicted_id = self.opponent_ids.pop(0)
+            min_i = 0
+            min_wr = self.win_rates[self.opponent_ids[min_i]]
+            for i, opp_id in enumerate(self.opponent_ids):
+                wr = self.win_rates[opp_id]
+                if wr < min_wr:
+                    min_i = i
+                    min_wr = wr
+
+            evicted_id = self.opponent_ids.pop(min_i)
             self.win_rates.pop(evicted_id, None)
+
             evicted_path = self.pool_dir / f"{evicted_id}.pt"
             if evicted_path.exists():
                 evicted_path.unlink()

@@ -724,11 +724,15 @@ class FuzzyHeuristic(Player):
                     continue
                 for opp in battle.opponent_active_pokemon:
                     if opp and not opp.fainted:
-                        best_damage = max(best_damage, self._calculate_damage(mv, target, opp, battle))
+                        best_damage = max(
+                            best_damage, self._calculate_damage(mv, target, opp, battle)
+                        )
             return 0.10 + 0.35 * best_damage
 
         elif move.id in {"followme", "ragepowder"}:
-            pressure = sum(self._get_defensive_rating(battle, ally) for ally in battle.active_pokemon if ally)
+            pressure = sum(
+                self._get_defensive_rating(battle, ally) for ally in battle.active_pokemon if ally
+            )
             bonus = 0.0
             partner = battle.active_pokemon[1 - pos]
             if partner and not partner.fainted:
@@ -1432,10 +1436,16 @@ class FuzzyHeuristic(Player):
             return True
 
         target_side = (
-            battle.opponent_active_pokemon if target in battle.opponent_active_pokemon else battle.active_pokemon
+            battle.opponent_active_pokemon
+            if target in battle.opponent_active_pokemon
+            else battle.active_pokemon
         )
         for mon in target_side:
-            if mon and not mon.fainted and mon.ability in {"armortail", "queenlymajesty", "dazzling"}:
+            if (
+                mon
+                and not mon.fainted
+                and mon.ability in {"armortail", "queenlymajesty", "dazzling"}
+            ):
                 return True
         return False
 
@@ -1575,14 +1585,25 @@ if __name__ == "__main__":
     from poke_env import AccountConfiguration, LocalhostServerConfiguration
 
     sys.path.append(str(Path(__file__).parent))
-    from replay_gen import TerminalPlayer
     from teams import RandomTeamFromPool
 
-    async def battle_against_bot():
-        teams_dir = Path(__file__).parent.parent / "teams"
+    async def main():
+        root_dir = Path(__file__).resolve().parent.parent
+        teams_dir = root_dir / "teams"
+
+        if not teams_dir.exists():
+            print(f"Teams directory not found: {teams_dir}")
+            return
+
         team_files = [
-            path.read_text(encoding="utf-8") for path in teams_dir.iterdir() if path.is_file()
+            path.read_text(encoding="utf-8")
+            for path in teams_dir.iterdir()
+            if path.is_file() and not path.name.startswith(".")
         ]
+
+        if not team_files:
+            print(f"No team files found in {teams_dir}.")
+            return
 
         team = RandomTeamFromPool(team_files)
         fmt = "gen9vgc2025regh"
@@ -1596,18 +1617,7 @@ if __name__ == "__main__":
             max_concurrent_battles=1,
         )
 
-        terminal_player = TerminalPlayer(
-            save_dir="/tmp/replays",
-            account_configuration=AccountConfiguration("TermPlayer", None),
-            battle_format=fmt,
-            server_configuration=LocalhostServerConfiguration,
-            team=team,
-            accept_open_team_sheet=True,
-            max_concurrent_battles=1,
-        )
+        print("FuzzyBot is listening for challenges on localhost...")
+        await bot_player.accept_challenges(None, 1000)
 
-        print("Starting 1 battle against Gen9DoublesFuzzyHeuristic...")
-        await terminal_player.battle_against(bot_player, n_battles=1)
-        print("Battle finished!")
-
-    asyncio.run(battle_against_bot())
+    asyncio.run(main())
