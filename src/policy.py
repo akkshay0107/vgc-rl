@@ -44,7 +44,7 @@ class PolicyNet(nn.Module):
         init.orthogonal_(self.policy_head.weight, gain=0.1)
         init.zeros_(self.policy_head.bias)
 
-        init.orthogonal_(self.value_head.weight, gain=1.0)
+        init.orthogonal_(self.value_head.weight, gain=0.05)
         init.zeros_(self.value_head.bias)
 
         for module in self.shared_backbone:
