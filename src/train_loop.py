@@ -406,6 +406,7 @@ def ppo_update(episodes: list) -> dict:
     t0 = time.time()
 
     tot_policy_loss = 0.0
+    tot_value_loss = 0.0
     tot_entropy_loss = 0.0
     tot_kl_div = 0.0
     tot_grad_norm = 0.0
@@ -489,33 +490,37 @@ def ppo_update(episodes: list) -> dict:
 
 def main():
     showdown_procs = []
-    for i in range(config.num_envs):
-        port = 8000 + i
-        proc = subprocess.Popen(
-            ["node", "pokemon-showdown", "start", "--no-security", str(port)],
-            cwd="pokemon-showdown",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        showdown_procs.append(proc)
-
-    # Give the servers a moment to start
-    time.sleep(10)
-
-    envs = [
-        SimEnv.build_env(env_id=i, server_port=8000 + (i % config.num_envs))
-        for i in range(config.n_jobs)
-    ]
-    buffer = RolloutBuffer()
-    executor = ThreadPoolExecutor(max_workers=config.n_jobs)
-
-    config.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    config.pool_dir.mkdir(parents=True, exist_ok=True)
-
-    tb_writer = SummaryWriter(log_dir="runs/ppo_training")
+    envs = []
+    executor = None
+    tb_writer = None
 
     # to guarantee executor shutdown
     try:
+        for i in range(config.num_envs):
+            port = 8000 + i
+            proc = subprocess.Popen(
+                ["node", "pokemon-showdown", "start", "--no-security", str(port)],
+                cwd="pokemon-showdown",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            showdown_procs.append(proc)
+
+        # Give the servers a moment to start
+        time.sleep(10)
+
+        envs = [
+            SimEnv.build_env(env_id=i, server_port=8000 + (i % config.num_envs))
+            for i in range(config.n_jobs)
+        ]
+        buffer = RolloutBuffer()
+        executor = ThreadPoolExecutor(max_workers=config.n_jobs)
+
+        config.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        config.pool_dir.mkdir(parents=True, exist_ok=True)
+
+        tb_writer = SummaryWriter(log_dir="runs/ppo_training")
+
         start = load_checkpoint(config.checkpoint_path, policy, optimizer, scheduler)
 
         if start is not None:
@@ -586,7 +591,7 @@ def main():
                 f"Self WR: {rollout_stats['self_win_rate']:.1%} | "
                 f"P-Loss: {stats['policy_loss']:.4f} | "
                 f"V-Loss: {stats['value_loss']:.4f} | "
-                f"Ent: {stats['entropy_loss']:.4f} | "
+                f"Entropy: {-stats['entropy_loss']:.4f} | "
                 f"Grad: {stats['grad_norm']:.2f} | "
                 f"Clip: {stats['clip_fraction']:.2%} | "
                 f"KL: {stats['kl_divergence']:.4f}"
@@ -597,8 +602,10 @@ def main():
                 logging.info("Checkpoint saved.")
 
     finally:
-        executor.shutdown(wait=False, cancel_futures=True)
-        tb_writer.close()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+        if tb_writer is not None:
+            tb_writer.close()
         for env in envs:
             try:
                 env.close()

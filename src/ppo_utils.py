@@ -159,7 +159,7 @@ class RolloutBuffer:
         if all_advantages:
             flat_adv = torch.cat(all_advantages, dim=0)
             adv_mean = flat_adv.mean()
-            adv_std = flat_adv.std() + 1e-8
+            adv_std = flat_adv.std().clamp_min(1e-8)
             for ep in all_episodes:
                 ep["advantages"] = (ep["advantages"] - adv_mean) / adv_std
 
