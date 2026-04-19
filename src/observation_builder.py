@@ -251,73 +251,85 @@ def _get_pokemon_obs(
 def _get_ordered_pokemon(
     battle: DoubleBattle, is_opponent: bool
 ) -> list[tuple[Pokemon | None, int]]:
-    """
-    Returns a list of 6 (Pokemon, original_index) tuples.
-    Order: Active Slot 0, Active Slot 1, Bench 0, Bench 1, Dropped 0, Dropped 1
-    """
     active = battle.opponent_active_pokemon if is_opponent else battle.active_pokemon
     team = battle.opponent_team if is_opponent else battle.team
-
-    slot0 = active[0] if active else None
-    slot1 = active[1] if len(active) > 1 else None
-    assigned = {slot0, slot1} - {None}
 
     def get_orig_idx(mon):
         if mon is None or is_opponent:
             return -1
-        # Map back to original team index
         for i, m in enumerate(battle.team.values()):
             if m == mon:
                 return i
         return -1
 
-    others = [(m, get_orig_idx(m)) for m in team.values() if m not in assigned]
-
     if battle.teampreview:
-        # During team preview, show all 6 in a flat list
-        res = others + [(None, -1)] * 6
-        return res[:6]
+        res = [(m, get_orig_idx(m)) for m in team.values()]
+        return (res + [(None, -1)] * 6)[:6]
 
-    bench, dropped = [], []
-    if not is_opponent:
+    # Pack actives first, then the rest of the team to avoid None slots if mon exists
+    res = []
+    for m in active:
+        if m is not None:
+            res.append((m, get_orig_idx(m)))
+
+    assigned = {m for m, i in res}
+    others_list = [m for m in team.values() if m not in assigned]
+
+    if is_opponent:
+        res += [(m, -1) for m in others_list]
+    else:
+        # My team: prioritize bench (fainted or switchable) over dropped
         possible_switches = {mon for switches in battle.available_switches for mon in switches}
-        for mon, idx in others:
+        bench, dropped = [], []
+        for mon in others_list:
+            idx = get_orig_idx(mon)
             if mon.fainted or mon in possible_switches:
                 bench.append((mon, idx))
             else:
                 dropped.append((mon, idx))
-    else:
-        # For opponent during battle, we only ever see at most 2 benched pokemon in VGC
-        bench = others
+        res += bench + dropped
 
-    # Pad to exact sizes
-    bench = (bench + [(None, -1)] * 2)[:2]
-    dropped = (dropped + [(None, -1)] * 2)[:2]
-
-    return [(slot0, get_orig_idx(slot0)), (slot1, get_orig_idx(slot1))] + bench + dropped
+    return (res + [(None, -1)] * 6)[:6]
 
 
 def _get_team_obs(battle: DoubleBattle):
-    def process_mons(mons):
+    possible_switches = {mon for switches in battle.available_switches for mon in switches}
+
+    def process_mons(mons, is_opponent: bool):
         txt, arr = [], []
+        active_list = battle.opponent_active_pokemon if is_opponent else battle.active_pokemon
+        # For opponent, count how many unique pokemon have been revealed in battle
+        revealed_count = sum(1 for m in battle.opponent_team.values() if m.revealed)
+
         for i, (mon, idx) in enumerate(mons):
             if mon is None:
                 cond = 0
             elif battle.teampreview:
                 cond = 2
-            elif i < 2:
+            elif mon in active_list:
                 cond = 1
             elif mon.fainted:
                 cond = 3
+            elif is_opponent:
+                # In VGC, if 4 unique opponents were seen, the other 2 are DROPPED
+                if not mon.revealed and revealed_count >= 4:
+                    cond = -1
+                else:
+                    cond = 2
+            elif mon in possible_switches:
+                cond = 2
             else:
-                cond = 2 if i < 4 else -1
+                cond = -1  # Dropped
+
             t, a = _get_pokemon_obs(mon, battle, cond, idx)
             txt.append(t)
             arr.append(a)
         return txt, arr
 
-    p1_txt, p1_arr = process_mons(_get_ordered_pokemon(battle, is_opponent=False))
-    p2_txt, p2_arr = process_mons(_get_ordered_pokemon(battle, is_opponent=True))
+    p1_txt, p1_arr = process_mons(
+        _get_ordered_pokemon(battle, is_opponent=False), is_opponent=False
+    )
+    p2_txt, p2_arr = process_mons(_get_ordered_pokemon(battle, is_opponent=True), is_opponent=True)
 
     return p1_txt, p1_arr, p2_txt, p2_arr
 
@@ -351,7 +363,9 @@ def _get_locals(battle: DoubleBattle):
 
     p2_row = global_effects + [
         _get_turns_left(
-            battle, battle.opponent_side_conditions.get(SideCondition.TAILWIND, -1), duration=4
+            battle,
+            battle.opponent_side_conditions.get(SideCondition.TAILWIND, -1),
+            duration=4,
         ),
         _get_turns_left(battle, battle.opponent_side_conditions.get(SideCondition.AURORA_VEIL, -1)),
     ]
@@ -506,9 +520,12 @@ def from_battle(battle: AbstractBattle):
             break
 
     info_txt = _get_info_text(p1_tera, opp_tera)
-
-    # Summaries for the last 3 turns
     hist_summaries = [_get_turn_summary(battle, battle.turn - i) for i in [1, 2, 3]]
+
+    p1_flat = [text for pair in p1_txt_pairs for text in pair]
+    opp_flat = [text for pair in opp_txt_pairs for text in pair]
+
+    texts = [*hist_summaries, field_txt, info_txt, *p1_flat, *opp_flat]
 
     p1_field_nums, p2_field_nums = _get_locals(battle)
     tera_flags = [0 if p1_tera is None else 1, 0 if opp_tera is None else 1]
@@ -529,12 +546,7 @@ def from_battle(battle: AbstractBattle):
         [field_num_row_raw, torch.zeros(TINYBERT_SZ - len(field_num_row_raw))]
     )
 
-    p1_flat = [text for pair in p1_txt_pairs for text in pair]  # 12
-    opp_flat = [text for pair in opp_txt_pairs for text in pair]  # 12
-
-    text_emb = encode_texts(
-        [*hist_summaries, field_txt, info_txt, *p1_flat, *opp_flat]
-    )  # 3 + 1 + 1 + 12 + 12 = 29 tokens
+    text_emb = encode_texts(texts)  # 3 + 1 + 1 + 12 + 12 = 29 tokens
 
     num_rows = torch.tensor(p1_arr + opp_arr)  # 6 + 6 = 12 rows
     num_emb = torch.cat([num_rows, torch.zeros((12, TINYBERT_SZ - EXTRA_SZ))], dim=1)  # 12 rows
