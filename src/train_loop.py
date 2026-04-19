@@ -22,8 +22,10 @@ from policy import PolicyNet
 from ppo_utils import (
     OpponentPool,
     RolloutBuffer,
+    initial_state,
     load_checkpoint,
     load_config,
+    reducer_of,
     save_checkpoint,
     unwrap_policy,
 )
@@ -71,17 +73,6 @@ scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 if config.compile_policy and policy.device.type == "cuda":
     policy = cast(PolicyNet, torch.compile(policy))
-
-
-def reducer_of(model: PolicyNet):
-    return unwrap_policy(model).reducer
-
-
-def initial_state(model: PolicyNet, batch_size: int, device: torch.device):
-    reducer = reducer_of(model)
-    cls = reducer.cls_base.detach().expand(batch_size, -1, -1).squeeze(1).to(device)
-    hg = reducer.hg_init.detach().expand(batch_size, -1, -1).to(device)
-    return cls, hg
 
 
 def state_to_cpu(state):

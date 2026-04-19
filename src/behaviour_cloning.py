@@ -2,16 +2,12 @@ import random
 from pathlib import Path
 
 import torch
-from torch.distributions import Categorical
 from torch.utils.data import Dataset
 
 from policy import PolicyNet
+from ppo_utils import initial_state
 
 BATCH_SIZE = 8  # number of episodes per gradient update
-
-
-def unwrap_policy(policy: PolicyNet) -> PolicyNet:
-    return getattr(policy, "_orig_mod", policy)
 
 
 class ReplayDataset(Dataset):
@@ -50,42 +46,32 @@ def _run_episode(
         correct: number of correctly predicted actions
         total:   total number of actions evaluated
     """
+    if state is None:
+        state = initial_state(policy, 1, device)
+
     loss = torch.tensor(0.0, device=device)
     correct = 0
     total = 0
 
     for sample in episode:
-        obs = sample["obs"].to(device)
-        mask = sample["mask"].to(device)
-        target = sample["action"].to(device)
+        # Unsqueeze to add batch dimension (B=1) as expected by PolicyNet
+        obs = sample["obs"].to(device, non_blocking=True).unsqueeze(0)
+        mask = sample["mask"].to(device, non_blocking=True).unsqueeze(0)
+        target = sample["action"].to(device, non_blocking=True).unsqueeze(0)
 
-        if obs.dim() == 2:
-            obs = obs.unsqueeze(0)
-        if mask.dim() == 2:
-            mask = mask.unsqueeze(0)
-        if target.dim() == 1:
-            target = target.unsqueeze(0)
-
-        is_tp = obs[:, 41, 18] > 0.5
-
-        policy_logits, _, _, _, state = policy(obs, state, mask, sample_actions=False)
-
-        # condition Pokemon 2's mask on Pokemon 1's ground-truth action
-        logits = policy._apply_masks(policy_logits, mask)
-        logits = policy._apply_sequential_masks(logits, target[:, 0], mask, is_tp)
-
-        cat1 = Categorical(logits=logits[:, 0])
-        cat2 = Categorical(logits=logits[:, 1])
-        step_loss = -(cat1.log_prob(target[:, 0]) + cat2.log_prob(target[:, 1])).mean()
-        loss += step_loss
+        log_prob, _, _, next_state = policy.evaluate_actions(obs, target, mask, state)
+        loss -= log_prob.mean()
 
         with torch.no_grad():
+            logits = policy.get_policy_masked_logits(obs, target, mask, state)
             preds = torch.stack(
                 [logits[:, 0].argmax(dim=-1), logits[:, 1].argmax(dim=-1)],
                 dim=-1,
             )
             correct += (preds == target).sum().item()
             total += target.numel()
+
+        state = next_state
 
     return loss, correct, total
 
@@ -125,6 +111,10 @@ def train_behavior_cloning(
 
     # Train / val split
     episodes = [dataset[i] for i in range(len(dataset)) if dataset[i]]
+    if not episodes:
+        print("No valid episodes found in dataset.")
+        return None
+
     random.shuffle(episodes)
     val_size = min(int(round(val_split_ratio * len(episodes))), len(episodes) - 1)
     val_episodes = episodes[:val_size]
@@ -184,12 +174,3 @@ def train_behavior_cloning(
         print()
 
     return policy
-
-
-def save_checkpoint(path, model, epoch):
-    model = unwrap_policy(model)
-    checkpoint = {
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-    }
-    torch.save(checkpoint, path)

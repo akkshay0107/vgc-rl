@@ -6,6 +6,7 @@ from torch.distributions import Categorical
 import observation_builder
 from env import Gen9VGCEnv
 from policy import PolicyNet
+from ppo_utils import initial_state
 
 
 class RLPlayer(Player):
@@ -40,7 +41,10 @@ class RLPlayer(Player):
 
         return sorted_logits.scatter(-1, sorted_indices, sorted_logits)
 
-    def _top_p(self, obs, action_mask):
+    def _top_p(self, obs, action_mask, is_tp: bool):
+        if self.state is None:
+            self.state = initial_state(self.policy, 1, self.policy.device)
+
         policy_logits, _, _, _, self.state = self.policy(
             obs, self.state, action_mask, sample_actions=False
         )
@@ -50,20 +54,22 @@ class RLPlayer(Player):
         cat1 = Categorical(logits=p1_logits)
         action1 = cat1.sample()  # (B,)
 
-        logits = self.policy._apply_sequential_masks(logits, action1, action_mask)
+        is_tp_t = torch.tensor([is_tp], device=self.policy.device, dtype=torch.bool)
+        logits = self.policy._apply_sequential_masks(logits, action1, action_mask, is_tp_t)
         p2_logits = self._apply_top_p(logits[:, 1])
         cat2 = Categorical(logits=p2_logits)
         action2 = cat2.sample()  # (B,)
 
         return torch.stack([action1, action2], dim=-1)
 
-    def _get_action(self, battle: AbstractBattle):
+    def _get_action(self, battle: AbstractBattle, is_tp: bool):
         obs = self.get_observation(battle)
         action_mask = observation_builder.get_action_mask(battle)
         with torch.no_grad():
             actions = self._top_p(
                 obs.unsqueeze(0).to(self.policy.device),
                 action_mask.unsqueeze(0).to(self.policy.device),
+                is_tp,
             )
         return actions[0].cpu().numpy()
 
@@ -71,7 +77,7 @@ class RLPlayer(Player):
         assert isinstance(battle, DoubleBattle)
         if battle._wait:
             return DefaultBattleOrder()
-        return Gen9VGCEnv.action_to_order(self._get_action(battle), battle)
+        return Gen9VGCEnv.action_to_order(self._get_action(battle, False), battle)
 
     def get_observation(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
@@ -81,10 +87,61 @@ class RLPlayer(Player):
         assert isinstance(battle, DoubleBattle)
         # Team preview is the start of the battle, so we reset the state here
         self.state = None
-        action = self._get_action(battle)
+        action = self._get_action(battle, True)
         order = Gen9VGCEnv.action_to_order(action, battle)
         return order.message
 
     def _battle_finished_callback(self, battle: AbstractBattle):
         # Reset state at the end of the battle to prevent memory leaks or state carry-over
         self.state = None
+
+
+if __name__ == "__main__":
+    import asyncio
+    import sys
+    from pathlib import Path
+
+    from poke_env import AccountConfiguration, LocalhostServerConfiguration
+
+    sys.path.append(str(Path(__file__).parent))
+    from ppo_utils import load_checkpoint
+    from teams import RandomTeamFromPool
+
+    async def main():
+        root_dir = Path(__file__).resolve().parent.parent
+        teams_dir = root_dir / "teams"
+
+        if not teams_dir.exists():
+            print(f"Teams directory not found: {teams_dir}")
+            return
+
+        team_files = [
+            path.read_text(encoding="utf-8")
+            for path in teams_dir.iterdir()
+            if path.is_file() and not path.name.startswith(".")
+        ]
+
+        if not team_files:
+            print(f"No team files found in {teams_dir}.")
+            return
+
+        team = RandomTeamFromPool(team_files)
+        fmt = "gen9vgc2025regh"
+
+        policy = PolicyNet()
+        load_checkpoint(Path("./checkpoints/model_final.pt"), policy)
+
+        bot_player = RLPlayer(
+            policy=policy,
+            account_configuration=AccountConfiguration("Bot", None),
+            battle_format=fmt,
+            server_configuration=LocalhostServerConfiguration,
+            team=team,
+            accept_open_team_sheet=True,
+            max_concurrent_battles=1,
+        )
+
+        print("Bot is listening for challenges on localhost...")
+        await bot_player.accept_challenges(None, 1000)
+
+    asyncio.run(main())

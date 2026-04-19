@@ -170,6 +170,7 @@ class PolicyNet(nn.Module):
         action_mask: torch.Tensor,
         is_tp: torch.Tensor,
     ):
+        is_tp = is_tp.bool()
         mask2 = action_mask[:, 1].clone().bool()
 
         # If Pokemon 1 switches to slot idx, Pokemon 2 cannot switch to the same slot

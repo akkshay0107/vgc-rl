@@ -15,6 +15,17 @@ def unwrap_policy(policy: PolicyNet) -> PolicyNet:
     return getattr(policy, "_orig_mod", policy)
 
 
+def reducer_of(model: PolicyNet):
+    return unwrap_policy(model).reducer
+
+
+def initial_state(model: PolicyNet, batch_size: int, device: torch.device):
+    reducer = reducer_of(model)
+    cls = reducer.cls_base.detach().expand(batch_size, -1, -1).squeeze(1).to(device)
+    hg = reducer.hg_init.detach().expand(batch_size, -1, -1).to(device)
+    return cls, hg
+
+
 @dataclass
 class PPOConfig:
     num_episodes: int = int(1e5)
