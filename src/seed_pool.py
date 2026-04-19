@@ -1,3 +1,4 @@
+import shutil
 import sys
 from pathlib import Path
 
@@ -16,6 +17,8 @@ def _get_dataset(replays_base: Path, subdir: str) -> ReplayDataset | None:
 def main():
     root_dir = Path(__file__).resolve().parent.parent
     replays_base = root_dir / "replays"
+    backup_dir = root_dir / "backups"
+    backup_dir.mkdir(exist_ok=True)
 
     if not replays_base.exists():
         print(f"Replays directory {replays_base} does not exist. Run replay_gen.py first.")
@@ -45,6 +48,7 @@ def main():
             if policy:
                 pool.add(policy, "seed_max_base_power")
                 added_seeds.append("seed_max_base_power")
+                shutil.copy(config.pool_dir / "seed_max_base_power.pt", backup_dir / "seed_max_base_power.pt")
     else:
         print("seed_max_base_power already exists.")
 
@@ -57,6 +61,7 @@ def main():
             if policy:
                 pool.add(policy, "seed_simple_heuristic")
                 added_seeds.append("seed_simple_heuristic")
+                shutil.copy(config.pool_dir / "seed_simple_heuristic.pt", backup_dir / "seed_simple_heuristic.pt")
     else:
         print("seed_simple_heuristic already exists.")
 
@@ -69,6 +74,7 @@ def main():
             if policy:
                 pool.add(policy, "seed_fuzzy_heuristic")
                 added_seeds.append("seed_fuzzy_heuristic")
+                shutil.copy(config.pool_dir / "seed_fuzzy_heuristic.pt", backup_dir / "seed_fuzzy_heuristic.pt")
     else:
         print("seed_fuzzy_heuristic already exists.")
 

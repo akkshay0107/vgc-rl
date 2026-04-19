@@ -3,6 +3,7 @@ set -euo pipefail
 
 POOL_DIR="./checkpoints/pool"
 PPO_CHECKPOINT="./checkpoints/ppo_checkpoint.pt"
+BACKUP_DIR="./backups"
 SEEDS=(
   "seed_max_base_power"
   "seed_simple_heuristic"
@@ -10,8 +11,8 @@ SEEDS=(
 )
 
 if [[ ! -d "$POOL_DIR" ]]; then
-  echo "Pool dir not found: $POOL_DIR" >&2
-  exit 1
+  echo "Pool directory missing, creating: $POOL_DIR"
+  mkdir -p "$POOL_DIR"
 fi
 
 shopt -s nullglob dotglob
@@ -36,6 +37,14 @@ done
 shopt -u nullglob dotglob
 
 rm -f -- "$PPO_CHECKPOINT"
+
+# Restore from backups if they exist and are missing in POOL_DIR
+for seed in "${SEEDS[@]}"; do
+  if [[ ! -f "$POOL_DIR/$seed.pt" ]] && [[ -f "$BACKUP_DIR/$seed.pt" ]]; then
+    echo "Restoring $seed.pt from backup..."
+    cp "$BACKUP_DIR/$seed.pt" "$POOL_DIR/"
+  fi
+done
 
 cat > "$POOL_DIR/pool_state.json" <<'JSON'
 {

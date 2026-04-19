@@ -28,10 +28,10 @@ def initial_state(model: PolicyNet, batch_size: int, device: torch.device):
 
 @dataclass
 class PPOConfig:
-    num_episodes: int = int(1e5)
+    num_episodes: int = 25000
     num_envs: int = 4
     n_jobs: int = 8
-    rollouts_per_episode: int = 64
+    rollouts_per_episode: int = 128
 
     gamma: float = 0.97
     gae_lambda: float = 0.95
@@ -48,13 +48,13 @@ class PPOConfig:
 
     checkpoint_path: Path = Path(__file__).parent.parent / "checkpoints" / "ppo_checkpoint.pt"
     pool_dir: Path = Path(__file__).parent.parent / "checkpoints" / "pool"
-    pool_size: int = 10
-    snapshot_interval: int = 10
+    pool_size: int = 40
+    snapshot_interval: int = 50
     # EMA smoothing factor for per-opponent win-rate tracking (lower = smoother).
     pool_win_rate_smoothing: float = 0.1
     # Minimum sampling weight for any opponent (prevents starvation).
     min_pool_win_rate_weight: float = 0.1
-    pool_cache_size: int = 5
+    pool_cache_size: int = 20
     self_play_prob: float = 0.5
     compile_policy: bool = True
     # Skew importance of team preview step
@@ -268,17 +268,17 @@ class OpponentPool:
     def add(self, policy: PolicyNet, opponent_id: str) -> None:
         model = unwrap_policy(policy)
 
-        # evict lowest winrate
+        # evict highest winrate (easiest opponents) to keep the pool challenging
         while len(self.opponent_ids) >= self.config.pool_size:
-            min_i = 0
-            min_wr = self.win_rates[self.opponent_ids[min_i]]
+            max_i = 0
+            max_wr = self.win_rates.get(self.opponent_ids[max_i], 0.5)
             for i, opp_id in enumerate(self.opponent_ids):
-                wr = self.win_rates[opp_id]
-                if wr < min_wr:
-                    min_i = i
-                    min_wr = wr
+                wr = self.win_rates.get(opp_id, 0.5)
+                if wr > max_wr:
+                    max_i = i
+                    max_wr = wr
 
-            evicted_id = self.opponent_ids.pop(min_i)
+            evicted_id = self.opponent_ids.pop(max_i)
             self.win_rates.pop(evicted_id, None)
 
             evicted_path = self.pool_dir / f"{evicted_id}.pt"

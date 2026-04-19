@@ -32,3 +32,4 @@ test_replays/
 runs/
 *.log
 .ppoconfig
+backups/
