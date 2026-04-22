@@ -29,11 +29,11 @@ class CLSReducer(nn.Module):
         self,
         seq_len: int,
         feat_dim: int,
-        d_model: int = 768,
-        nhead: int = 8,
-        nlayer: int = 2,
-        dim_feedforward: int = 3072,
-        n_hg: int = 4,
+        d_model: int,
+        nhead: int,
+        nlayer: int,
+        dim_feedforward: int,
+        n_hg: int,
     ):
         super().__init__()
         if seq_len != OBS_DIM[0]:

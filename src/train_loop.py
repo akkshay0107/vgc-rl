@@ -25,9 +25,7 @@ from ppo_utils import (
     initial_state,
     load_checkpoint,
     load_config,
-    reducer_of,
     save_checkpoint,
-    unwrap_policy,
 )
 
 config = load_config()
@@ -55,7 +53,7 @@ signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
-optimizer = optim.AdamW(policy.parameters(), lr=config.lr, eps=3e-5)
+optimizer = optim.Adam(policy.parameters(), lr=config.lr, eps=1e-6)
 
 
 def lr_lambda(episode):
@@ -173,6 +171,9 @@ def collect_rollout(
             agent2: action2[0].cpu().numpy(),
         }
 
+        is_tp1 = env.battle1.teampreview
+        is_tp2 = env.battle2.teampreview if is_self_play else None
+
         if shutdown_requested:
             break
         next_obs, rewards, terminated, truncated, _ = env.step(actions)
@@ -190,7 +191,7 @@ def collect_rollout(
                 "rewards": torch.tensor([rewards[agent1]], dtype=torch.float32),
                 "dones": torch.tensor([done], dtype=torch.float32),
                 "action_masks": mask1.cpu(),
-                "is_team_preview": torch.tensor([env.battle1.teampreview], dtype=torch.bool),
+                "is_team_preview": torch.tensor([is_tp1], dtype=torch.bool),
             }
         )
 
@@ -204,7 +205,7 @@ def collect_rollout(
                     "rewards": torch.tensor([rewards[agent2]], dtype=torch.float32),
                     "dones": torch.tensor([done], dtype=torch.float32),
                     "action_masks": mask2.cpu(),
-                    "is_team_preview": torch.tensor([env.battle2.teampreview], dtype=torch.bool),
+                    "is_team_preview": torch.tensor([is_tp2], dtype=torch.bool),
                 }
             )
 
@@ -324,6 +325,7 @@ def _run_batched_ppo(
         "policy_loss": 0.0,
         "value_loss": 0.0,
         "entropy_loss": 0.0,
+        "normalized_entropy": 0.0,
         "kl_div": 0.0,
         "clip_frac": 0.0,
     }
@@ -349,11 +351,13 @@ def _run_batched_ppo(
         is_tp_t = torch.cat([ep_is_tp[t : t + 1] for ep_is_tp in is_tp[:active_n]], dim=0)
 
         curr_state = (state[0][:active_n], state[1][:active_n])
-        curr_log_prob, curr_entropy, curr_val, next_state = policy.evaluate_actions(
-            obs_t,
-            actions_t,
-            action_masks_t,
-            state=curr_state,
+        curr_log_prob, curr_entropy, curr_normalized_entropy, curr_val, next_state = (
+            policy.evaluate_actions(
+                obs_t,
+                actions_t,
+                action_masks_t,
+                state=curr_state,
+            )
         )
 
         log_ratio = curr_log_prob - old_log_probs_t
@@ -385,6 +389,9 @@ def _run_batched_ppo(
             metrics["policy_loss"] += step_policy_loss.sum().item()
             metrics["value_loss"] += step_value_loss.sum().item()
             metrics["entropy_loss"] += step_entropy_loss.sum().item()
+
+            metrics["normalized_entropy"] += curr_normalized_entropy.sum().item()
+
             # schulman kl approx (was having negative kl in early steps)
             metrics["kl_div"] += ((ratio - 1) - log_ratio).sum().item()
             metrics["clip_frac"] += ((ratio - 1.0).abs() > config.clip_range).float().sum().item()
@@ -399,6 +406,7 @@ def ppo_update(episodes: list) -> dict:
     tot_policy_loss = 0.0
     tot_value_loss = 0.0
     tot_entropy_loss = 0.0
+    tot_normalized_entropy = 0.0
     tot_kl_div = 0.0
     tot_grad_norm = 0.0
     tot_clip_frac = 0.0
@@ -428,6 +436,7 @@ def ppo_update(episodes: list) -> dict:
             tot_policy_loss += batch_metrics["policy_loss"]
             tot_value_loss += batch_metrics["value_loss"]
             tot_entropy_loss += batch_metrics["entropy_loss"]
+            tot_normalized_entropy += batch_metrics["normalized_entropy"]
             epoch_kl += batch_metrics["kl_div"]
             tot_clip_frac += batch_metrics["clip_frac"]
 
@@ -462,6 +471,7 @@ def ppo_update(episodes: list) -> dict:
             "policy_loss": 0.0,
             "value_loss": 0.0,
             "entropy_loss": 0.0,
+            "normalized_entropy": 0.0,
             "kl_divergence": 0.0,
             "grad_norm": 0.0,
             "clip_fraction": 0.0,
@@ -472,6 +482,7 @@ def ppo_update(episodes: list) -> dict:
         "policy_loss": tot_policy_loss / tot_steps,
         "value_loss": tot_value_loss / tot_steps,
         "entropy_loss": tot_entropy_loss / tot_steps,
+        "normalized_entropy": tot_normalized_entropy / tot_steps,
         "kl_divergence": tot_kl_div / tot_steps,
         "grad_norm": tot_grad_norm / num_updates if num_updates > 0 else 0.0,
         "clip_fraction": tot_clip_frac / tot_steps,
@@ -568,6 +579,7 @@ def main():
             tb_writer.add_scalar("Loss/Policy", stats["policy_loss"], episode + 1)
             tb_writer.add_scalar("Loss/Value", stats["value_loss"], episode + 1)
             tb_writer.add_scalar("Loss/Entropy", stats["entropy_loss"], episode + 1)
+            tb_writer.add_scalar("Loss/NormalizedEntropy", stats["normalized_entropy"], episode + 1)
             tb_writer.add_scalar("Training/KL_Divergence", stats["kl_divergence"], episode + 1)
             tb_writer.add_scalar("Training/GradNorm", stats["grad_norm"], episode + 1)
             tb_writer.add_scalar("Training/ClipFraction", stats["clip_fraction"], episode + 1)
@@ -583,6 +595,7 @@ def main():
                 f"P-Loss: {stats['policy_loss']:.4f} | "
                 f"V-Loss: {stats['value_loss']:.4f} | "
                 f"Entropy: {-stats['entropy_loss']:.4f} | "
+                f"NormEnt: {stats['normalized_entropy']:.2%} | "
                 f"Grad: {stats['grad_norm']:.2f} | "
                 f"Clip: {stats['clip_fraction']:.2%} | "
                 f"KL: {stats['kl_divergence']:.4f}"

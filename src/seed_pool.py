@@ -29,8 +29,8 @@ def main():
     added_seeds = []
 
     bc_kwargs = {
-        "batch_size": 128,
-        "num_epochs": 10,
+        "batch_size": 32,
+        "num_epochs": 5,
         "learning_rate": 5e-4,
         "val_split_ratio": 0.1,
     }

@@ -13,17 +13,19 @@ class PolicyNet(nn.Module):
         self,
         obs_dim=OBS_DIM,
         act_size=ACT_SIZE,
-        d_model=256,
+        d_model=512,
         nhead=8,
         nlayer=3,
-        net_arch=(256, 256, 128),
+        net_arch=(256, 128),
         n_hg=4,
     ):
         super().__init__()
         self.seq_len, self.feat_dim = obs_dim
         self.act_size = act_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.reducer = CLSReducer(self.seq_len, self.feat_dim, d_model, nhead, nlayer, n_hg=n_hg)
+        self.reducer = CLSReducer(
+            self.seq_len, self.feat_dim, d_model, nhead, nlayer, 4 * d_model, n_hg
+        )
 
         layers = [nn.Linear(d_model, net_arch[0]), nn.GELU()]
         for h_in, h_out in zip(net_arch[:-1], net_arch[1:]):
@@ -44,7 +46,7 @@ class PolicyNet(nn.Module):
         init.orthogonal_(self.policy_head.weight, gain=0.1)
         init.zeros_(self.policy_head.bias)
 
-        init.orthogonal_(self.value_head.weight, gain=0.05)
+        init.orthogonal_(self.value_head.weight, gain=0.1)
         init.zeros_(self.value_head.bias)
 
         for module in self.shared_backbone:
@@ -134,7 +136,9 @@ class PolicyNet(nn.Module):
         actions: torch.Tensor,
         action_mask: torch.Tensor | None = None,
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    ) -> tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]
+    ]:
         if obs.dim() == 2:
             obs = obs.unsqueeze(0)
         is_tp = obs[:, 41, 18] > 0.5
@@ -144,8 +148,16 @@ class PolicyNet(nn.Module):
         if action_mask is not None:
             logits = self._apply_masks(policy_logits, action_mask)
             logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask, is_tp)
+
+            # Compute support sizes for normalized entropy
+            valid_count_1 = (logits[:, 0] > float("-inf")).sum(-1).float().clamp_min(1.0)
+            valid_count_2 = (logits[:, 1] > float("-inf")).sum(-1).float().clamp_min(1.0)
+            max_entropy = torch.log(valid_count_1) + torch.log(valid_count_2)
         else:
             logits = policy_logits
+            max_entropy = (
+                torch.log(torch.tensor(self.act_size, device=logits.device, dtype=torch.float32)) * 2
+            )
 
         cat1 = Categorical(logits=logits[:, 0])
         cat2 = Categorical(logits=logits[:, 1])
@@ -156,7 +168,11 @@ class PolicyNet(nn.Module):
 
         entropy = cat1.entropy() + cat2.entropy()
 
-        return log_prob, entropy, value, next_state
+        normalized_entropy = torch.where(
+            max_entropy > 0, entropy / max_entropy, torch.zeros_like(entropy)
+        )
+
+        return log_prob, entropy, normalized_entropy, value, next_state
 
     def _apply_masks(self, logits: torch.Tensor, action_mask: torch.Tensor) -> torch.Tensor:
         # Replace logits of illegal actions with -inf so they have zero probability

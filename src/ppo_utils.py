@@ -28,20 +28,20 @@ def initial_state(model: PolicyNet, batch_size: int, device: torch.device):
 
 @dataclass
 class PPOConfig:
-    num_episodes: int = 25000
-    num_envs: int = 4
-    n_jobs: int = 8
+    num_episodes: int = 12500
+    num_envs: int = 6
+    n_jobs: int = 12
     rollouts_per_episode: int = 128
 
     gamma: float = 0.97
     gae_lambda: float = 0.95
-    lr: float = 1e-5
+    lr: float = 5e-5
     batch_size: int = 16
     clip_range: float = 0.2
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.02
     value_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    target_kl: float = 0.02
+    max_grad_norm: float = 1.0
+    target_kl: float = 0.03
     ppo_epochs: int = 4
     warmup_episodes: int = 100
     min_lr: float = 1e-6
@@ -56,9 +56,9 @@ class PPOConfig:
     min_pool_win_rate_weight: float = 0.1
     pool_cache_size: int = 20
     self_play_prob: float = 0.5
-    compile_policy: bool = True
+    compile_policy: bool = False
     # Skew importance of team preview step
-    team_preview_loss_mult: float = 2.0
+    team_preview_loss_mult: float = 1.5
 
 
 def load_config(config_path: str = ".ppoconfig") -> PPOConfig:

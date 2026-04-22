@@ -59,7 +59,7 @@ def _run_episode(
         mask = sample["mask"].to(device, non_blocking=True).unsqueeze(0)
         target = sample["action"].to(device, non_blocking=True).unsqueeze(0)
 
-        log_prob, _, _, next_state = policy.evaluate_actions(obs, target, mask, state)
+        log_prob, _, _, _, next_state = policy.evaluate_actions(obs, target, mask, state)
         loss -= log_prob.mean()
 
         with torch.no_grad():
@@ -124,7 +124,7 @@ def train_behavior_cloning(
         policy = PolicyNet()
 
     device = policy.device
-    optimizer = torch.optim.AdamW(policy.parameters(), lr=learning_rate, eps=1e-5)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=learning_rate, eps=1e-5)
 
     for epoch in range(num_epochs):
         print(f"Epoch {epoch + 1}/{num_epochs}")

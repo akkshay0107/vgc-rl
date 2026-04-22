@@ -312,7 +312,7 @@ def parse_args(argv: list[str] | None = None) -> RLBotConfig:
     parser.add_argument(
         "--max-concurrent-battles",
         type=int,
-        default=int(os.getenv("SHOWDOWN_MAX_CONCURRENT_BATTLES", "1")),
+        default=int(os.getenv("SHOWDOWN_MAX_CONCURRENT_BATTLES", "10")),
         help="Maximum simultaneous battles.",
     )
     parser.add_argument(
