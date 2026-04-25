@@ -258,8 +258,6 @@ def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPo
 
     pool_wins = 0
     pool_total = 0
-    self_wins = 0
-    self_total = 0
 
     futures = [
         executor.submit(worker, opp_policy, opp_id) for opp_policy, opp_id in sampled_opponents
@@ -272,17 +270,13 @@ def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPo
                 future.cancel()
             break
         opp_id, won, was_self_play = f.result()
-        if was_self_play:
-            self_wins += int(won)
-            self_total += 1
-        else:
+        if not was_self_play:
             pool_wins += int(won)
             pool_total += 1
             pool.update_win_rate(opp_id, won)
 
     return {
         "pool_win_rate": pool_wins / pool_total if pool_total > 0 else 0.0,
-        "self_win_rate": self_wins / self_total if self_total > 0 else 0.0,
     }
 
 
@@ -371,17 +365,15 @@ def _run_batched_ppo(
         step_entropy_loss = -curr_entropy
 
         is_tp_mask = is_tp_t.squeeze(-1)
-        step_ent_coef = config.entropy_coef * torch.where(is_tp_mask, config.teampreview_entropy_mult, 1.0)
+        step_ent_coef = config.entropy_coef * torch.where(
+            is_tp_mask, config.teampreview_entropy_mult, 1.0
+        )
 
         is_warmup = episode < config.warmup_episodes
         step_loss = config.value_coef * step_value_loss
 
         if not is_warmup:
-            step_loss = (
-                step_loss
-                + step_policy_loss
-                + step_ent_coef * step_entropy_loss
-            )
+            step_loss = step_loss + step_policy_loss + step_ent_coef * step_entropy_loss
 
         step_loss = torch.where(
             is_tp_mask,
@@ -410,6 +402,16 @@ def _run_batched_ppo(
 def ppo_update(episodes: list, episode: int) -> dict:
     policy.train()
     t0 = time.time()
+
+    with torch.no_grad():
+        all_returns = torch.cat([ep["returns"] for ep in episodes])
+        all_values = torch.cat([ep["values"] for ep in episodes])
+        var_y = torch.var(all_returns)
+        if var_y > 1e-8:
+            explained_var = 1.0 - torch.var(all_returns - all_values) / var_y
+        else:
+            explained_var = torch.tensor(0.0)
+        explained_var = explained_var.item()
 
     tot_policy_loss = 0.0
     tot_value_loss = 0.0
@@ -494,6 +496,7 @@ def ppo_update(episodes: list, episode: int) -> dict:
         "kl_divergence": tot_kl_div / tot_steps,
         "grad_norm": tot_grad_norm / num_updates if num_updates > 0 else 0.0,
         "clip_fraction": tot_clip_frac / tot_steps,
+        "explained_variance": explained_var,
         "time": time.time() - t0,
     }
 
@@ -582,30 +585,43 @@ def main():
                 logging.info(f"Snapshot '{snap_id}' added to opponent pool. Pool: {pool}")
 
             current_lr = scheduler.get_last_lr()[0]
-            tb_writer.add_scalar("WinRate/Pool", rollout_stats["pool_win_rate"], episode + 1)
-            tb_writer.add_scalar("WinRate/Self", rollout_stats["self_win_rate"], episode + 1)
-            tb_writer.add_scalar("Loss/Policy", stats["policy_loss"], episode + 1)
-            tb_writer.add_scalar("Loss/Value", stats["value_loss"], episode + 1)
-            tb_writer.add_scalar("Loss/Entropy", stats["entropy_loss"], episode + 1)
-            tb_writer.add_scalar("Loss/NormalizedEntropy", stats["normalized_entropy"], episode + 1)
-            tb_writer.add_scalar("Training/KL_Divergence", stats["kl_divergence"], episode + 1)
-            tb_writer.add_scalar("Training/GradNorm", stats["grad_norm"], episode + 1)
-            tb_writer.add_scalar("Training/ClipFraction", stats["clip_fraction"], episode + 1)
-            tb_writer.add_scalar("Training/LearningRate", current_lr, episode + 1)
-            tb_writer.add_scalar("Timing/Rollout", rollout_time, episode + 1)
-            tb_writer.add_scalar("Timing/Update", stats["time"], episode + 1)
-            tb_writer.add_scalar("Buffer/NumTrajectories", len(buffer.trajectories), episode + 1)
+            is_warmup = episode < config.warmup_episodes
+            tag = "Warmup" if is_warmup else "Train"
+
+            tb_writer.add_scalar(f"{tag}/WinRate/Pool", rollout_stats["pool_win_rate"], episode + 1)
+            tb_writer.add_scalar(f"{tag}/Loss/Policy", stats["policy_loss"], episode + 1)
+            tb_writer.add_scalar(f"{tag}/Loss/Value", stats["value_loss"], episode + 1)
+            tb_writer.add_scalar(f"{tag}/Loss/Entropy", stats["entropy_loss"], episode + 1)
+            tb_writer.add_scalar(
+                f"{tag}/Loss/NormalizedEntropy", stats["normalized_entropy"], episode + 1
+            )
+            tb_writer.add_scalar(
+                f"{tag}/Training/KL_Divergence", stats["kl_divergence"], episode + 1
+            )
+            tb_writer.add_scalar(f"{tag}/Training/GradNorm", stats["grad_norm"], episode + 1)
+            tb_writer.add_scalar(
+                f"{tag}/Training/ClipFraction", stats["clip_fraction"], episode + 1
+            )
+            tb_writer.add_scalar(
+                f"{tag}/Training/ExplainedVariance", stats["explained_variance"], episode + 1
+            )
+            tb_writer.add_scalar(f"{tag}/Training/LearningRate", current_lr, episode + 1)
+            tb_writer.add_scalar(f"{tag}/Timing/Rollout", rollout_time, episode + 1)
+            tb_writer.add_scalar(f"{tag}/Timing/Update", stats["time"], episode + 1)
+            tb_writer.add_scalar(
+                f"{tag}/Buffer/NumTrajectories", len(buffer.trajectories), episode + 1
+            )
 
             logging.info(
-                f"Episode {episode + 1}/{config.num_episodes} | "
+                f"Ep {episode + 1}/{config.num_episodes} ({tag[:1]}) | "
                 f"Pool WR: {rollout_stats['pool_win_rate']:.1%} | "
-                f"Self WR: {rollout_stats['self_win_rate']:.1%} | "
                 f"P-Loss: {stats['policy_loss']:.4f} | "
                 f"V-Loss: {stats['value_loss']:.4f} | "
                 f"Entropy: {-stats['entropy_loss']:.4f} | "
                 f"NormEnt: {stats['normalized_entropy']:.2%} | "
                 f"Grad: {stats['grad_norm']:.2f} | "
                 f"Clip: {stats['clip_fraction']:.2%} | "
+                f"ExpVar: {stats['explained_variance']:.4f} | "
                 f"KL: {stats['kl_divergence']:.4f}"
             )
 

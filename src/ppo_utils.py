@@ -166,6 +166,7 @@ class RolloutBuffer:
                 "actions": ep["actions"].to(device),
                 "log_probs": ep["log_probs"].to(device),
                 "action_masks": ep["action_masks"].to(device),
+                "values": values.to(device),
                 "advantages": adv.to(device),
                 "returns": ret.to(device),
                 "is_team_preview": ep["is_team_preview"].to(device),
