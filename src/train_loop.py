@@ -226,8 +226,8 @@ def collect_rollout(
         if is_self_play:
             buffer.add_episode(traj2)
 
-    # winner gets final reward = +1, other gets -1
-    return bool(final_rewards[agent1] > final_rewards[agent2]), is_self_play
+    winner = bool(final_rewards[agent1] > final_rewards[agent2])
+    return winner, is_self_play
 
 
 def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPool):
@@ -287,7 +287,7 @@ def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPo
 
 
 def _run_batched_ppo(
-    episodes: list[dict], device: torch.device
+    episodes: list[dict], device: torch.device, episode: int
 ) -> tuple[torch.Tensor, dict[str, float], int]:
     """
     Run PPO BPTT over a minibatch of variable-length episodes.
@@ -370,14 +370,22 @@ def _run_batched_ppo(
         step_value_loss = F.mse_loss(curr_val, returns_t, reduction="none")
         step_entropy_loss = -curr_entropy
 
-        step_loss = (
-            step_policy_loss
-            + config.value_coef * step_value_loss
-            + config.entropy_coef * step_entropy_loss
-        )
+        is_tp_mask = is_tp_t.squeeze(-1)
+        step_ent_coef = config.entropy_coef * torch.where(is_tp_mask, config.teampreview_entropy_mult, 1.0)
+
+        is_warmup = episode < config.warmup_episodes
+        step_loss = config.value_coef * step_value_loss
+
+        if not is_warmup:
+            step_loss = (
+                step_loss
+                + step_policy_loss
+                + step_ent_coef * step_entropy_loss
+            )
+
         step_loss = torch.where(
-            is_tp_t,
-            step_loss * config.team_preview_loss_mult,
+            is_tp_mask,
+            step_loss * config.teampreview_loss_mult,
             step_loss,
         )
 
@@ -399,7 +407,7 @@ def _run_batched_ppo(
     return total_loss, metrics, total_steps
 
 
-def ppo_update(episodes: list) -> dict:
+def ppo_update(episodes: list, episode: int) -> dict:
     policy.train()
     t0 = time.time()
 
@@ -431,7 +439,7 @@ def ppo_update(episodes: list) -> dict:
 
             optimizer.zero_grad(set_to_none=True)
 
-            batch_loss, batch_metrics, batch_steps = _run_batched_ppo(batch, policy.device)
+            batch_loss, batch_metrics, batch_steps = _run_batched_ppo(batch, policy.device, episode)
 
             tot_policy_loss += batch_metrics["policy_loss"]
             tot_value_loss += batch_metrics["value_loss"]
@@ -564,7 +572,7 @@ def main():
                 continue
 
             rollout_data = buffer.get_batches(policy.device, config)
-            stats = ppo_update(rollout_data)
+            stats = ppo_update(rollout_data, episode)
             scheduler.step()
 
             if (episode + 1) % config.snapshot_interval == 0:

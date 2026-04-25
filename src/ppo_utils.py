@@ -29,8 +29,8 @@ def initial_state(model: PolicyNet, batch_size: int, device: torch.device):
 @dataclass
 class PPOConfig:
     num_episodes: int = 12500
-    num_envs: int = 6
-    n_jobs: int = 12
+    num_envs: int = 4
+    n_jobs: int = 8
     rollouts_per_episode: int = 128
 
     gamma: float = 0.97
@@ -58,7 +58,8 @@ class PPOConfig:
     self_play_prob: float = 0.5
     compile_policy: bool = False
     # Skew importance of team preview step
-    team_preview_loss_mult: float = 1.5
+    teampreview_loss_mult: float = 1.5
+    teampreview_entropy_mult: float = 1.5
 
 
 def load_config(config_path: str = ".ppoconfig") -> PPOConfig:
@@ -116,26 +117,43 @@ class RolloutBuffer:
         self.reset()
 
     def reset(self):
-        self.trajectories: list[list[dict]] = []
+        self.trajectories: list[dict[str, torch.Tensor]] = []
+
+    _FIELDS = (
+        "obs",
+        "actions",
+        "log_probs",
+        "values",
+        "rewards",
+        "dones",
+        "action_masks",
+        "is_team_preview",
+    )
 
     def add_episode(self, trajectory: list[dict]):
-        if trajectory:
-            self.trajectories.append(trajectory)
+        if not trajectory:
+            return
+        episode = {
+            f: torch.cat([step[f] for step in trajectory], dim=0) for f in self._FIELDS
+        }
+        episode["length"] = len(trajectory)
+        self.trajectories.append(episode)
 
     def get_batches(self, device: torch.device, config: PPOConfig):
         all_episodes = []
         all_advantages = []
 
-        for traj in self.trajectories:
-            rewards = torch.cat([step["rewards"] for step in traj], dim=0).float()
-            values = torch.cat([step["values"] for step in traj], dim=0).float()
-            dones = torch.cat([step["dones"] for step in traj], dim=0).float()
+        for ep in self.trajectories:
+            rewards = ep["rewards"].float()
+            values = ep["values"].float()
+            dones = ep["dones"].float()
+            T = ep["length"]
 
             adv = torch.zeros_like(rewards)
             gae = torch.zeros(1, dtype=torch.float32)
 
-            for t in reversed(range(len(traj))):
-                next_value = values[t + 1] if t + 1 < len(traj) else torch.zeros_like(values[t])
+            for t in reversed(range(T)):
+                next_value = values[t + 1] if t + 1 < T else torch.zeros_like(values[t])
                 nonterminal = 1.0 - dones[t]
                 delta = rewards[t] + config.gamma * next_value * nonterminal - values[t]
                 gae = delta + config.gamma * config.gae_lambda * nonterminal * gae
@@ -144,29 +162,18 @@ class RolloutBuffer:
             ret = adv + values
 
             episode_data = {
-                "obs": torch.cat([step["obs"] for step in traj], dim=0).to(
-                    device, non_blocking=True
-                ),
-                "actions": torch.cat([step["actions"] for step in traj], dim=0).to(
-                    device, non_blocking=True
-                ),
-                "log_probs": torch.cat([step["log_probs"] for step in traj], dim=0).to(
-                    device, non_blocking=True
-                ),
-                "action_masks": torch.cat([step["action_masks"] for step in traj], dim=0).to(
-                    device, non_blocking=True
-                ),
-                "advantages": adv.to(device, non_blocking=True),
-                "returns": ret.to(device, non_blocking=True),
-                "is_team_preview": torch.cat([step["is_team_preview"] for step in traj], dim=0).to(
-                    device, non_blocking=True
-                ),
-                "length": len(traj),
+                "obs": ep["obs"].to(device),
+                "actions": ep["actions"].to(device),
+                "log_probs": ep["log_probs"].to(device),
+                "action_masks": ep["action_masks"].to(device),
+                "advantages": adv.to(device),
+                "returns": ret.to(device),
+                "is_team_preview": ep["is_team_preview"].to(device),
+                "length": T,
             }
             all_episodes.append(episode_data)
             all_advantages.append(episode_data["advantages"])
 
-        # Global normalization of advantages
         if all_advantages:
             flat_adv = torch.cat(all_advantages, dim=0)
             adv_mean = flat_adv.mean()

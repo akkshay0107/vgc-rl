@@ -26,6 +26,67 @@ from poke_env.teambuilder import Teambuilder
 import observation_builder
 from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
+from poke_env.battle.move_category import MoveCategory
+from poke_env.battle.side_condition import SideCondition
+
+_SHAPING_PENALTY = 0.05
+_PROTECT_MOVES = {"protect", "detect"}
+
+def _compute_shaping_penalty(action: npt.NDArray, battle: DoubleBattle) -> float:
+    if battle.teampreview:
+        return 0.0
+
+    penalty = 0.0
+    for pos in range(2):
+        a = int(action[pos])
+        is_move = 7 <= a <= 46
+        is_tera = a >= 27
+
+        if not is_move:
+            continue
+
+        active_mon = battle.active_pokemon[pos]
+        if active_mon is None:
+            continue
+
+        move_idx = (a - 7) % 20 // 5
+        mvs = (
+            battle.available_moves[pos]
+            if len(battle.available_moves[pos]) == 1
+            and battle.available_moves[pos][0].id in {"struggle", "recharge"}
+            else list(active_mon.moves.values())
+        )
+        if move_idx >= len(mvs):
+            continue
+
+        move = mvs[move_idx]
+
+        if move.id == "tailwind":
+            tw_start = battle.side_conditions.get(SideCondition.TAILWIND, -1)
+            if tw_start >= 0 and max(0, 4 - (battle.turn - tw_start)) > 0:
+                penalty -= _SHAPING_PENALTY
+
+        if is_tera and move.id in _PROTECT_MOVES:
+            penalty -= _SHAPING_PENALTY
+
+        if move.category != MoveCategory.STATUS and not is_tera:
+            target_idx = (a - 7) % 5 - 2
+            targets = []
+            if target_idx == 1:
+                targets = [battle.opponent_active_pokemon[0]]
+            elif target_idx == 2:
+                targets = [battle.opponent_active_pokemon[1]]
+            elif target_idx == 0:
+                targets = [op for op in battle.opponent_active_pokemon if op and not op.fainted]
+
+            if targets and all(
+                t is not None and not t.fainted and t.damage_multiplier(move) == 0
+                for t in targets
+            ):
+                if not battle.can_tera[pos] and not battle.available_switches[pos]:
+                    penalty -= _SHAPING_PENALTY
+
+    return penalty
 
 
 class VGCEnvPlayer(_EnvPlayer):
@@ -423,15 +484,21 @@ class SimEnv(Gen9VGCEnv):
             team=team,
         )
 
+    def step(self, actions):
+        p1_pen = _compute_shaping_penalty(actions[self.agent1.username], self.battle1) if self.battle1 else 0.0
+        p2_pen = _compute_shaping_penalty(actions[self.agent2.username], self.battle2) if self.battle2 else 0.0
+
+        obs, rewards, terminated, truncated, info = super().step(actions)
+
+        rewards[self.agent1.username] = rewards.get(self.agent1.username, 0.0) + p1_pen
+        rewards[self.agent2.username] = rewards.get(self.agent2.username, 0.0) + p2_pen
+
+        return obs, rewards, terminated, truncated, info
+
     def calc_reward(self, battle: AbstractBattle) -> float:
         if not battle.finished:
             return 0
-        elif battle.won:
-            return 1
-        elif battle.lost:
-            return -1
-        else:
-            return 0
+        return 1 if battle.won else (-1 if battle.lost else 0)
 
     def embed_battle(self, battle: AbstractBattle):
         assert isinstance(battle, DoubleBattle)
