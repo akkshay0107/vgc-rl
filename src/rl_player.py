@@ -39,6 +39,7 @@ class RLPlayer(Player):
         self.p = p
         self.state = None
 
+    @torch.inference_mode()
     def _apply_top_p(self, logits: torch.Tensor) -> torch.Tensor:
         sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
         sorted_probs = torch.softmax(sorted_logits, dim=-1)
@@ -52,10 +53,12 @@ class RLPlayer(Player):
 
         return sorted_logits.scatter(-1, sorted_indices, sorted_logits)
 
+    @torch.inference_mode()
     def _top_p(self, obs, action_mask, is_tp: bool):
         if self.state is None:
             self.state = initial_state(self.policy, 1, self.policy.device)
 
+        # The model's forward pass is naturally covered by the decorator
         policy_logits, _, _, _, self.state = self.policy(
             obs, self.state, action_mask, sample_actions=False
         )
@@ -73,15 +76,15 @@ class RLPlayer(Player):
 
         return torch.stack([action1, action2], dim=-1)
 
+    @torch.inference_mode()
     def _get_action(self, battle: AbstractBattle, is_tp: bool):
         obs = self.get_observation(battle)
         action_mask = observation_builder.get_action_mask(battle)
-        with torch.no_grad():
-            actions = self._top_p(
-                obs.unsqueeze(0).to(self.policy.device),
-                action_mask.unsqueeze(0).to(self.policy.device),
-                is_tp,
-            )
+        actions = self._top_p(
+            obs.unsqueeze(0).to(self.policy.device),
+            action_mask.unsqueeze(0).to(self.policy.device),
+            is_tp,
+        )
         return actions[0].cpu().numpy()
 
     def choose_move(self, battle: AbstractBattle):
