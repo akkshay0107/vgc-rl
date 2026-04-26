@@ -7,6 +7,37 @@ from cls_reducer import CLSReducer
 from lookups import ACT_SIZE, OBS_DIM
 
 
+class ValueHead(nn.Module):
+    def __init__(self, in_features: int, hidden_features: int, scale: float = 0.1):
+        super().__init__()
+        self.scale = scale
+        self.net = nn.Sequential(
+            nn.Linear(in_features, hidden_features),
+            nn.GELU(),
+            nn.Linear(hidden_features, hidden_features),
+            nn.GELU(),
+            nn.Linear(hidden_features, 1),
+        )
+        self._init_weights()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # if tracking gradients, scale the gradient flowing back to the backbone
+        if x.requires_grad:
+            x.register_hook(lambda grad: grad * self.scale)
+
+        return self.net(x)
+
+    @torch.no_grad()
+    def _init_weights(self):
+        for i, module in enumerate(self.net):
+            if isinstance(module, nn.Linear):
+                if i == len(self.net) - 1:
+                    init.orthogonal_(module.weight, gain=0.1)
+                else:
+                    init.orthogonal_(module.weight, gain=1.0)
+                init.zeros_(module.bias)
+
+
 # Needs all inputs to be on the same device as the model
 class PolicyNet(nn.Module):
     def __init__(
@@ -16,7 +47,6 @@ class PolicyNet(nn.Module):
         d_model=512,
         nhead=8,
         nlayer=3,
-        net_arch=(256, 128),
         n_hg=4,
     ):
         super().__init__()
@@ -27,31 +57,34 @@ class PolicyNet(nn.Module):
             self.seq_len, self.feat_dim, d_model, nhead, nlayer, 4 * d_model, n_hg
         )
 
-        layers = [nn.Linear(d_model, net_arch[0]), nn.GELU()]
-        for h_in, h_out in zip(net_arch[:-1], net_arch[1:]):
-            layers.extend([nn.Linear(h_in, h_out), nn.GELU()])
-        self.shared_backbone = nn.Sequential(*layers)
-
         # outputs logits for each possible action for each pokemon
-        self.policy_head = nn.Linear(net_arch[-1], 2 * act_size)
+        policy_layers = [
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 2 * act_size),
+        ]
+        self.policy_head = nn.Sequential(*policy_layers)
         # outputs scalar value from the state V(s)
-        self.value_head = nn.Linear(net_arch[-1], 1)
+        self.value_head = ValueHead(in_features=d_model, hidden_features=d_model // 2, scale=0.1)
 
         self.to(self.device)
         self._init_weights()
 
     @torch.no_grad()
     def _init_weights(self):
-        # orthogonal initialization of the network
-        init.orthogonal_(self.policy_head.weight, gain=0.1)
-        init.zeros_(self.policy_head.bias)
-
-        init.orthogonal_(self.value_head.weight, gain=0.1)
-        init.zeros_(self.value_head.bias)
-
-        for module in self.shared_backbone:
+        for module in self.shared_backbone.modules():
             if isinstance(module, nn.Linear):
                 init.orthogonal_(module.weight, gain=1.0)
+                init.zeros_(module.bias)
+
+        for i, module in enumerate(self.policy_head):
+            if isinstance(module, nn.Linear):
+                if i == len(self.policy_head) - 1:
+                    init.orthogonal_(module.weight, gain=0.1)
+                else:
+                    init.orthogonal_(module.weight, gain=1.0)
                 init.zeros_(module.bias)
 
     def forward(
@@ -80,10 +113,9 @@ class PolicyNet(nn.Module):
         is_tp = obs[:, 41, 18] > 0.5
 
         z, next_state = self.reducer(obs, state)
-        x = self.shared_backbone(z)
-
-        policy_logits = self.policy_head(x).reshape(B, 2, self.act_size)
-        value = self.value_head(x).squeeze(-1)
+        policy_logits = self.policy_head(z).reshape(B, 2, self.act_size)
+        # automatically scales down value gradients into the policy
+        value = self.value_head(z).squeeze(-1)
 
         # Return raw logits if no masking or sampling needed
         if not sample_actions or action_mask is None:
@@ -156,7 +188,8 @@ class PolicyNet(nn.Module):
         else:
             logits = policy_logits
             max_entropy = (
-                torch.log(torch.tensor(self.act_size, device=logits.device, dtype=torch.float32)) * 2
+                torch.log(torch.tensor(self.act_size, device=logits.device, dtype=torch.float32))
+                * 2
             )
 
         cat1 = Categorical(logits=logits[:, 0])
