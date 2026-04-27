@@ -12,8 +12,11 @@ wheels/
 
 # Additional
 *.pdf
+*.tex
 .DS_Store
 teams/.pastes
+.ruff_cache
+.pytest_cache
 
 # Inverts
 !.python-version
