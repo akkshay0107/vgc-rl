@@ -322,8 +322,20 @@ def _run_batched_ppo(
         "normalized_entropy": 0.0,
         "kl_div": 0.0,
         "clip_frac": 0.0,
+        "entropy_coef": 0.0,
     }
     total_steps = 0
+
+    # annealed entropy coefficient
+    anneal_steps = config.num_episodes - config.entropy_anneal_start
+    if episode <= config.entropy_anneal_start or anneal_steps <= 0:
+        curr_ent_coef = config.entropy_coef
+    else:
+        progress = (episode - config.entropy_anneal_start) / anneal_steps
+        curr_ent_coef = (
+            config.entropy_coef - (config.entropy_coef - config.entropy_coef_floor) * progress
+        )
+        curr_ent_coef = max(curr_ent_coef, config.entropy_coef_floor)
 
     for t in range(max_steps):
         active_n = int((lengths > t).sum().item())
@@ -365,7 +377,7 @@ def _run_batched_ppo(
         step_entropy_loss = -curr_entropy
 
         is_tp_mask = is_tp_t.squeeze(-1)
-        step_ent_coef = config.entropy_coef * torch.where(
+        step_ent_coef = curr_ent_coef * torch.where(
             is_tp_mask, config.teampreview_entropy_mult, 1.0
         )
 
@@ -395,6 +407,7 @@ def _run_batched_ppo(
             # schulman kl approx (was having negative kl in early steps)
             metrics["kl_div"] += ((ratio - 1) - log_ratio).sum().item()
             metrics["clip_frac"] += ((ratio - 1.0).abs() > config.clip_range).float().sum().item()
+            metrics["entropy_coef"] = curr_ent_coef  # same for all steps in minibatch
 
     return total_loss, metrics, total_steps
 
@@ -449,6 +462,7 @@ def ppo_update(episodes: list, episode: int) -> dict:
             tot_normalized_entropy += batch_metrics["normalized_entropy"]
             epoch_kl += batch_metrics["kl_div"]
             tot_clip_frac += batch_metrics["clip_frac"]
+            last_entropy_coef = batch_metrics["entropy_coef"]
 
             if batch_steps > 0:
                 (batch_loss / batch_steps).backward()
@@ -496,6 +510,7 @@ def ppo_update(episodes: list, episode: int) -> dict:
         "kl_divergence": tot_kl_div / tot_steps,
         "grad_norm": tot_grad_norm / num_updates if num_updates > 0 else 0.0,
         "clip_fraction": tot_clip_frac / tot_steps,
+        "entropy_coefficient": last_entropy_coef,
         "explained_variance": explained_var,
         "time": time.time() - t0,
     }
@@ -604,6 +619,9 @@ def main():
             )
             tb_writer.add_scalar(
                 f"{tag}/Training/ExplainedVariance", stats["explained_variance"], episode + 1
+            )
+            tb_writer.add_scalar(
+                f"{tag}/Training/EntropyCoef", stats["entropy_coefficient"], episode + 1
             )
             tb_writer.add_scalar(f"{tag}/Training/LearningRate", current_lr, episode + 1)
             tb_writer.add_scalar(f"{tag}/Timing/Rollout", rollout_time, episode + 1)

@@ -38,7 +38,9 @@ class PPOConfig:
     lr: float = 5e-5
     batch_size: int = 16
     clip_range: float = 0.2
-    entropy_coef: float = 0.02
+    entropy_coef: float = 0.05
+    entropy_coef_floor: float = 0.005
+    entropy_anneal_start: int = 1000
     value_coef: float = 0.5
     max_grad_norm: float = 1.0
     target_kl: float = 0.03
@@ -133,9 +135,7 @@ class RolloutBuffer:
     def add_episode(self, trajectory: list[dict]):
         if not trajectory:
             return
-        episode = {
-            f: torch.cat([step[f] for step in trajectory], dim=0) for f in self._FIELDS
-        }
+        episode = {f: torch.cat([step[f] for step in trajectory], dim=0) for f in self._FIELDS}
         episode["length"] = len(trajectory)
         self.trajectories.append(episode)
 
