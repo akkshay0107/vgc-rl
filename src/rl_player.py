@@ -56,19 +56,31 @@ class RLPlayer(Player):
         if self.state is None:
             self.state = initial_state(self.policy, 1, self.policy.device)
 
-        policy_logits, _, _, _, self.state = self.policy(
-            obs, self.state, action_mask, sample_actions=False
-        )
-        logits = self.policy._apply_masks(policy_logits, action_mask)
+        # Get backbone embedding
+        z, self.state = self.policy.reducer(obs, self.state)
 
-        p1_logits = self._apply_top_p(logits[:, 0])
-        cat1 = Categorical(logits=p1_logits)
+        # Pokemon 1: P(a1 | z)
+        logits1 = self.policy.policy_head1(z)
+        if action_mask is not None:
+            logits1 = logits1.masked_fill(action_mask[:, 0] == 0, float("-inf"))
+
+        p1_logits_top_p = self._apply_top_p(logits1)
+        cat1 = Categorical(logits=p1_logits_top_p)
         action1 = cat1.sample()  # (B,)
 
-        is_tp_t = torch.tensor([is_tp], device=self.policy.device, dtype=torch.bool)
-        logits = self.policy._apply_sequential_masks(logits, action1, action_mask, is_tp_t)
-        p2_logits = self._apply_top_p(logits[:, 1])
-        cat2 = Categorical(logits=p2_logits)
+        # Pokemon 2: P(a2 | z, a1)
+        a1_emb = self.policy.action_embedding(action1)
+        logits2 = self.policy.policy_head2(torch.cat([z, a1_emb], dim=-1))
+
+        # Combine and apply sequential masks
+        logits = torch.stack([logits1, logits2], dim=1)
+        if action_mask is not None:
+            is_tp_t = torch.tensor([is_tp], device=self.policy.device, dtype=torch.bool)
+            logits = self.policy._apply_masks(logits, action_mask)
+            logits = self.policy._apply_sequential_masks(logits, action1, action_mask, is_tp_t)
+
+        p2_logits_top_p = self._apply_top_p(logits[:, 1])
+        cat2 = Categorical(logits=p2_logits_top_p)
         action2 = cat2.sample()  # (B,)
 
         return torch.stack([action1, action2], dim=-1)

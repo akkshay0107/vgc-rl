@@ -57,15 +57,28 @@ class PolicyNet(nn.Module):
             self.seq_len, self.feat_dim, d_model, nhead, nlayer, 4 * d_model, n_hg
         )
 
-        # outputs logits for each possible action for each pokemon
-        policy_layers = [
+        # act embedding for autoregressive conditioning (P(a2 | z, a1))
+        d_act_emb = d_model // 4
+        self.action_embedding = nn.Embedding(act_size, d_act_emb)
+
+        # Policy Head 1 (Pokemon 1): P(a1 | z)
+        self.policy_head1 = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.GELU(),
             nn.Linear(d_model // 2, d_model // 2),
             nn.GELU(),
-            nn.Linear(d_model // 2, 2 * act_size),
-        ]
-        self.policy_head = nn.Sequential(*policy_layers)
+            nn.Linear(d_model // 2, act_size),
+        )
+
+        # Policy Head 2 (Pokemon 2): P(a2 | z, a1_emb)
+        self.policy_head2 = nn.Sequential(
+            nn.Linear(d_model + d_act_emb, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, act_size),
+        )
+
         # outputs scalar value from the state V(s)
         self.value_head = ValueHead(in_features=d_model, hidden_features=d_model // 2, scale=0.1)
 
@@ -74,18 +87,21 @@ class PolicyNet(nn.Module):
 
     @torch.no_grad()
     def _init_weights(self):
-        for module in self.shared_backbone.modules():
+        for module in self.reducer.modules():
             if isinstance(module, nn.Linear):
                 init.orthogonal_(module.weight, gain=1.0)
                 init.zeros_(module.bias)
 
-        for i, module in enumerate(self.policy_head):
-            if isinstance(module, nn.Linear):
-                if i == len(self.policy_head) - 1:
-                    init.orthogonal_(module.weight, gain=0.1)
-                else:
-                    init.orthogonal_(module.weight, gain=1.0)
-                init.zeros_(module.bias)
+        init.normal_(self.action_embedding.weight, mean=0, std=0.02)
+
+        for head in [self.policy_head1, self.policy_head2]:
+            for i, module in enumerate(head):
+                if isinstance(module, nn.Linear):
+                    if i == len(head) - 1:
+                        init.orthogonal_(module.weight, gain=0.1)
+                    else:
+                        init.orthogonal_(module.weight, gain=1.0)
+                    init.zeros_(module.bias)
 
     def forward(
         self,
@@ -93,6 +109,7 @@ class PolicyNet(nn.Module):
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
         action_mask: torch.Tensor | None = None,
         sample_actions: bool = True,
+        actions: torch.Tensor | None = None,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor | None,
@@ -105,39 +122,60 @@ class PolicyNet(nn.Module):
             obs = obs.unsqueeze(0)
         B, S, F = obs.shape
 
-        # changed assertion to error for debugging
         if S != self.seq_len or F != self.feat_dim:
             raise ValueError(f"Got shape ({S}, {F}). Expected({self.seq_len}, {self.feat_dim})")
 
-        # Detect phase from observation flag (Row 41, Index 18)
         is_tp = obs[:, 41, 18] > 0.5
 
         z, next_state = self.reducer(obs, state)
-        policy_logits = self.policy_head(z).reshape(B, 2, self.act_size)
-        # automatically scales down value gradients into the policy
         value = self.value_head(z).squeeze(-1)
 
-        # Return raw logits if no masking or sampling needed
-        if not sample_actions or action_mask is None:
-            return policy_logits, None, None, value, next_state
+        logits1 = self.policy_head1(z)  # (B, act_size)
 
-        # Mask logits with -inf where actions are illegal
-        logits = self._apply_masks(policy_logits, action_mask)
+        # eval / bc (action provided)
+        if actions is not None:
+            a1 = actions[:, 0]
+            a1_emb = self.action_embedding(a1)
+            logits2 = self.policy_head2(torch.cat([z, a1_emb], dim=-1))
+            logits = torch.stack([logits1, logits2], dim=1)
 
-        cat1 = Categorical(logits=logits[:, 0])
-        action1 = cat1.sample()
-        log_prob1 = cat1.log_prob(action1)
+            if action_mask is not None:
+                logits = self._apply_masks(logits, action_mask)
+                logits = self._apply_sequential_masks(logits, a1, action_mask, is_tp)
 
-        # Adjust logits for the second Pokemon
-        logits = self._apply_sequential_masks(logits, action1, action_mask, is_tp)
+            return logits, None, None, value, next_state
+
+        # no sampling requested (returns p1 logits and placeholder p2)
+        if not sample_actions:
+            logits = torch.stack([logits1, torch.zeros_like(logits1)], dim=1)
+            return logits, None, None, value, next_state
+
+        # sampling mode
+        if action_mask is not None:
+            l1 = logits1.masked_fill(action_mask[:, 0] == 0, float("-inf"))
+        else:
+            l1 = logits1
+
+        cat1 = Categorical(logits=l1)
+        a1 = cat1.sample()
+        log_prob1 = cat1.log_prob(a1)
+
+        a1_emb = self.action_embedding(a1)
+        logits2 = self.policy_head2(torch.cat([z, a1_emb], dim=-1))
+
+        logits = torch.stack([logits1, logits2], dim=1)
+        if action_mask is not None:
+            logits = self._apply_masks(logits, action_mask)
+            logits = self._apply_sequential_masks(logits, a1, action_mask, is_tp)
+
         cat2 = Categorical(logits=logits[:, 1])
-        action2 = cat2.sample()
-        log_prob2 = cat2.log_prob(action2)
+        a2 = cat2.sample()
+        log_prob2 = cat2.log_prob(a2)
 
         return (
             logits,
-            log_prob1 + log_prob2,  # log prob of choosing this action pair
-            torch.stack([action1, action2], -1),
+            log_prob1 + log_prob2,  # joint log prob
+            torch.stack([a1, a2], -1),
             value,
             next_state,
         )
@@ -149,17 +187,9 @@ class PolicyNet(nn.Module):
         action_mask: torch.Tensor | None,
         state: tuple[torch.Tensor, torch.Tensor] | None = None,
     ):
-        if obs.dim() == 2:
-            obs = obs.unsqueeze(0)
-        is_tp = obs[:, 41, 18] > 0.5
-
-        policy_logits, _, _, _, _ = self(obs, state, action_mask, sample_actions=False)
-
-        if action_mask is None:
-            return policy_logits
-
-        logits = self._apply_masks(policy_logits, action_mask)  # (B, 2, A)
-        logits = self._apply_sequential_masks(logits, action_taken[:, 0], action_mask, is_tp)
+        logits, _, _, _, _ = self(
+            obs, state, action_mask, sample_actions=False, actions=action_taken
+        )
         return logits
 
     def evaluate_actions(
@@ -171,16 +201,11 @@ class PolicyNet(nn.Module):
     ) -> tuple[
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]
     ]:
-        if obs.dim() == 2:
-            obs = obs.unsqueeze(0)
-        is_tp = obs[:, 41, 18] > 0.5
-
-        policy_logits, _, _, value, next_state = self(obs, state, action_mask, sample_actions=False)
+        logits, _, _, value, next_state = self(
+            obs, state, action_mask, sample_actions=False, actions=actions
+        )
 
         if action_mask is not None:
-            logits = self._apply_masks(policy_logits, action_mask)
-            logits = self._apply_sequential_masks(logits, actions[:, 0], action_mask, is_tp)
-
             # Compute support sizes for normalized entropy
             valid_count_1 = (logits[:, 0] > float("-inf")).sum(-1).float().clamp_min(1.0)
             valid_count_2 = (logits[:, 1] > float("-inf")).sum(-1).float().clamp_min(1.0)
