@@ -52,7 +52,7 @@ model, tokenizer = get_tinybert_model_and_tokenizer(device)
 
 
 # Pre-compiled constants and regexes for optimization
-CONDITION_DESC = {
+SLOT_STATUS_DESC = {
     -1: "This Pokemon is DROPPED. It is not part of the battle.",
     0: "This pokemon MAY or MAY NOT be in the back as a switch.",
     1: "This pokemon IS ACTIVE. It is currently on the field.",
@@ -60,7 +60,9 @@ CONDITION_DESC = {
     3: "This pokemon has FAINTED. It no longer participates in the battle.",
     4: "This pokemon CANNOT BE SWITCHED IN. May or may not be in team.",
 }
-DEFAULT_CONDITION_DESC = "We do not know about this pokemon."
+DEFAULT_SLOT_STATUS_DESC = "We do not know about this pokemon."
+
+SLOT_STATUS_IDX = {-1: 0, 0: 1, 1: 2, 2: 3, 3: 4, 4: 5}
 
 # Regex patterns for _get_turn_summary
 MOVE_RE = re.compile(r"\|move\|([^|]+)\|([^|]+)")
@@ -121,7 +123,7 @@ def _get_pokemon_text(
         return "This slot is empty.", "No information available."
 
     # information about pokemon position
-    cond_str = CONDITION_DESC.get(cond, DEFAULT_CONDITION_DESC)
+    cond_str = SLOT_STATUS_DESC.get(cond, DEFAULT_SLOT_STATUS_DESC)
 
     movelist = list(pokemon.moves.keys())
     joint_movelist = ",".join(movelist)
@@ -189,61 +191,82 @@ def _get_pokemon_obs(
     # Extra inputs for each pokemon (roughly normalized to [0,1])
     pokemon_row = [0.0] * EXTRA_SZ
     if pokemon is None:
+        # If no pokemon, we still set the slot status to unknown (index 1)
+        role_idx = SLOT_STATUS_IDX.get(cond, 1)
+        pokemon_row[55 + role_idx] = 1.0
         return pokemon_str, pokemon_row
 
-    pokemon_row[0] = pokemon.type_1.value / 18.0
-    pokemon_row[1] = 0.0 if pokemon.type_2 is None else pokemon.type_2.value / 18.0
-    pokemon_row[2] = 0.0 if not pokemon.is_terastallized else pokemon.tera_type.value / 18.0  # type: ignore
+    # Types One-Hot (0-53)
+    # Type 1 (0-17)
+    if pokemon.type_1:
+        pokemon_row[pokemon.type_1.value - 1] = 1.0
+    # Type 2 (18-35)
+    if pokemon.type_2:
+        pokemon_row[18 + pokemon.type_2.value - 1] = 1.0
+    # Tera Type (36-53)
+    if pokemon.is_terastallized:
+        pokemon_row[36 + pokemon.tera_type.value - 1] = 1.0
 
-    pokemon_row[3] = pokemon.current_hp_fraction if pokemon.current_hp is not None else 0.0
+    # Tera Flag (54)
+    pokemon_row[54] = 1.0 if pokemon.is_terastallized else 0.0
 
+    # Slot Status One-Hot (55-60)
+    role_idx = SLOT_STATUS_IDX.get(cond, 1)
+    pokemon_row[55 + role_idx] = 1.0
+
+    # Numerical Stats (61-82)
+    # HP (61)
+    pokemon_row[61] = pokemon.current_hp_fraction if pokemon.current_hp is not None else 0.0
+
+    # Base Stats (62-67)
     stats = ["hp", "atk", "def", "spa", "spd", "spe"]
     for i, stat in enumerate(stats):
-        pokemon_row[4 + i] = pokemon.base_stats[stat] / 200.0
+        pokemon_row[62 + i] = pokemon.base_stats[stat] / 200.0
 
+    # Boosts (68-74)
     boosts = ["atk", "def", "spa", "spd", "spe", "accuracy", "evasion"]
     for i, boost in enumerate(boosts):
-        pokemon_row[10 + i] = pokemon.boosts[boost] / 6.0
+        pokemon_row[68 + i] = pokemon.boosts[boost] / 6.0
 
+    # PP (75-78)
     for i, move in enumerate(pokemon.moves):
-        pokemon_row[17 + i] = pokemon.moves[move].current_pp / pokemon.moves[move].max_pp
+        if i < 4:
+            pokemon_row[75 + i] = pokemon.moves[move].current_pp / pokemon.moves[move].max_pp
 
-    # 0.1% to get a protect counter of 4 (anything above is nearly impossible)
-    pokemon_row[21] = pokemon.protect_counter / 4.0
+    # Misc Stats (79-82)
+    pokemon_row[79] = min(pokemon.protect_counter, 4) / 4.0
+    pokemon_row[80] = float(pokemon.first_turn)
+    pokemon_row[81] = pokemon.weight / 300.0
+    pokemon_row[82] = (orig_idx + 1) / 6.0
 
-    pokemon_row[22] = float(pokemon.first_turn)
-    pokemon_row[23] = pokemon.weight / 300.0  # heaviest pokemon is ursa bm at 330
-    pokemon_row[24] = (orig_idx + 1) / 6.0  # Original team index (1-6) or 0 if unknown/opp
-
-    # one hot of last move used
+    # 5. Last Move One-Hot (83-87)
     if last_move_id and pokemon:
         move_ids = list(pokemon.moves.keys())
         if last_move_id in move_ids:
             move_idx = move_ids.index(last_move_id)
             if move_idx < 4:
-                pokemon_row[25 + move_idx] = 1.0
+                pokemon_row[83 + move_idx] = 1.0
             else:
-                pokemon_row[29] = 1.0
+                pokemon_row[87] = 1.0
         else:
-            pokemon_row[29] = 1.0
+            pokemon_row[87] = 1.0
     else:
-        pokemon_row[29] = 1.0
-    # index 29 is 1 if last move is not known (flinch, switch, etc)
+        pokemon_row[87] = 1.0
 
-    # Status one-hot and counter (30-39)
+    # 6. Status one-hot and counter (88-97)
     statuses = [Status.BRN, Status.FRZ, Status.PAR, Status.PSN, Status.SLP]
     for i, s in enumerate(statuses):
         if pokemon.status == s:
-            pokemon_row[30 + i] = 1.0
-            pokemon_row[35 + i] = getattr(pokemon, "status_counter", 0) / 5.0
+            pokemon_row[88 + i] = 1.0
+            pokemon_row[93 + i] = min(getattr(pokemon, "status_counter", 0), 5) / 5.0
 
-    # Effects one-hot and counter (40-45)
+    # 7. Effects one-hot and counter (98-103)
     curr_effects = pokemon.effects
     effects = [Effect.CONFUSION, Effect.TAUNT, Effect.ENCORE]
     for i, e in enumerate(effects):
         if e in curr_effects:
-            pokemon_row[40 + i] = 1.0
-            pokemon_row[43 + i] = curr_effects[e] / 5.0
+            pokemon_row[98 + i] = 1.0
+            pokemon_row[101 + i] = curr_effects[e] / 5.0
 
     return pokemon_str, pokemon_row
 
