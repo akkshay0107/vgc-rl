@@ -9,17 +9,6 @@ dependencies = [
     "torch>=2.7.0",
     "numpy>=1.21.6",
     "gymnasium>=0.26.3",
-    "aiohttp>=3.8.1",
-    "autobahn>=22.7.1",
-    "websockets>=10.3",
-    "typing-extensions",
-    "orjson",
-    "requests",
-    "urllib3",
-    "idna",
-    "certifi",
-    "pettingzoo",
-    "scikit-learn>=1.0.0",
     "transformers[torch]>=4.57.1",
     "tensorboard>=2.20.0",
 ]
@@ -30,4 +19,3 @@ venv = ".venv"
 
 [tool.ruff]
 line-length = 100
-
