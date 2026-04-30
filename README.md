@@ -1,4 +1,4 @@
-## vgc-rl: Reinforcement Learning for Gen 9 Pokémon VGC
+## p0: Reinforcement Learning for Gen 9 Pokémon VGC
 
 This repository implements a multi-stage reinforcement learning framework for playing Pokémon Gen 9 VGC (Regulation H) for a fixed metagame. The training procedure combines trajectory bootstrapping via Behavioural Cloning with Proximal Policy Optimization (PPO) in a league based self play setup (partially inspired by AlphaStar and OpenAI Five).
 
@@ -104,11 +104,11 @@ Over the time axis, the model acts as an RNN, updating the hidden state (HG) wit
 The update logic follows:
 
 ```math
-\text{HG}_t = g(\text{HG}_{t-1}, \text{CLS}_{t-1}, \text{H1}_t)
+\Large \text{HG}_t = g(\text{HG}_{t-1}, \text{CLS}_{t-1}, \text{H1}_t)
 ```
 
 ```math
-\text{CLS}_t = f(\text{HG}_t, \text{O}_t)
+\Large \text{CLS}_t = f(\text{HG}_t, \text{O}_t)
 ```
 
 The CLS token becomes the internal state representation for the turn, and also the shared backbone, from which the policy and value network split.

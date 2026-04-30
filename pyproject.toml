@@ -1,5 +1,5 @@
 [project]
-name = "vgc-rl"
+name = "p0"
 version = "0.1.0"
 description = "A RL agent to play VGC in a competent manner"
 readme = "README.md"
