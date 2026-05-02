@@ -23,7 +23,7 @@ class ValueHead(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # if tracking gradients, scale the gradient flowing back to the backbone
         if x.requires_grad:
-            x.register_hook(lambda grad: grad * self.scale)
+            x = x.detach() + self.scale * (x - x.detach())
 
         return self.net(x)
 
@@ -211,7 +211,6 @@ class PolicyNet(nn.Module):
             valid_count_2 = (logits[:, 1] > float("-inf")).sum(-1).float().clamp_min(1.0)
             max_entropy = torch.log(valid_count_1) + torch.log(valid_count_2)
         else:
-            logits = policy_logits
             max_entropy = (
                 torch.log(torch.tensor(self.act_size, device=logits.device, dtype=torch.float32))
                 * 2
@@ -227,7 +226,9 @@ class PolicyNet(nn.Module):
         entropy = cat1.entropy() + cat2.entropy()
 
         normalized_entropy = torch.where(
-            max_entropy > 0, entropy / max_entropy, torch.zeros_like(entropy)
+            max_entropy > 0,
+            entropy / max_entropy.clamp_min(torch.finfo(entropy.dtype).eps),
+            torch.zeros_like(entropy),
         )
 
         return log_prob, entropy, normalized_entropy, value, next_state

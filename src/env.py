@@ -1,3 +1,4 @@
+import random
 from pathlib import Path
 from typing import Optional, Union
 from weakref import WeakKeyDictionary
@@ -5,7 +6,9 @@ from weakref import WeakKeyDictionary
 import numpy as np
 import numpy.typing as npt
 from gymnasium.spaces import MultiDiscrete
-from poke_env.battle import AbstractBattle, DoubleBattle, Pokemon
+from poke_env.battle import AbstractBattle, DoubleBattle, Pokemon, PokemonType, Weather
+from poke_env.battle.move_category import MoveCategory
+from poke_env.battle.side_condition import SideCondition
 from poke_env.environment.env import ObsType, PokeEnv, _EnvPlayer
 from poke_env.player.battle_order import (
     BattleOrder,
@@ -26,23 +29,53 @@ from poke_env.teambuilder import Teambuilder
 import observation_builder
 from lookups import ACT_SIZE
 from teams import RandomTeamFromPool
-from poke_env.battle.move_category import MoveCategory
-from poke_env.battle.side_condition import SideCondition
 
-_SHAPING_PENALTY = 0.05
+_SHAPING_PENALTY = 0.10
 _PROTECT_MOVES = {"protect", "detect"}
+_GHOST_PIERCING_ABILITIES = {"mindseye", "scrappy"}
+_GHOST_IMMUNITY_TYPES = {PokemonType.NORMAL, PokemonType.FIGHTING}
+
+
+def _target_has_defensive_escape(target: Pokemon, battle: DoubleBattle) -> bool:
+    if target.fainted:
+        return False
+
+    active_species = {
+        mon.base_species for mon in battle.opponent_active_pokemon if mon and not mon.fainted
+    }
+    can_switch = any(
+        mon is not target
+        and not mon.fainted
+        and not mon.active
+        and mon.base_species not in active_species
+        for mon in battle.opponent_team.values()
+    )
+    can_tera = not battle.opponent_used_tera and not target.is_terastallized
+    return can_switch or can_tera
+
+
+def _move_is_blocked_by_immunity(move, attacker: Pokemon, target: Pokemon) -> bool:
+    if target.fainted:
+        return False
+    if target.damage_multiplier(move) != 0:
+        return False
+    if (
+        attacker.ability in _GHOST_PIERCING_ABILITIES
+        and move.type in _GHOST_IMMUNITY_TYPES
+        and PokemonType.GHOST in target.types
+    ):
+        return False
+    return True
+
 
 def _compute_shaping_penalty(action: npt.NDArray, battle: DoubleBattle) -> float:
     if battle.teampreview:
         return 0.0
 
-    penalty = 0.0
+    penalties = 0
     for pos in range(2):
         a = int(action[pos])
-        is_move = 7 <= a <= 46
-        is_tera = a >= 27
-
-        if not is_move:
+        if not 7 <= a <= 46:
             continue
 
         active_mon = battle.active_pokemon[pos]
@@ -50,43 +83,60 @@ def _compute_shaping_penalty(action: npt.NDArray, battle: DoubleBattle) -> float
             continue
 
         move_idx = (a - 7) % 20 // 5
-        mvs = (
-            battle.available_moves[pos]
-            if len(battle.available_moves[pos]) == 1
-            and battle.available_moves[pos][0].id in {"struggle", "recharge"}
+        available_moves = battle.available_moves[pos]
+        moves = (
+            available_moves
+            if len(available_moves) == 1 and available_moves[0].id in {"struggle", "recharge"}
             else list(active_mon.moves.values())
         )
-        if move_idx >= len(mvs):
+        if move_idx >= len(moves):
             continue
 
-        move = mvs[move_idx]
+        move = moves[move_idx]
+        is_tera = a >= 27
+        target_idx = (a - 7) % 5 - 2
+        if target_idx == 0:
+            targets = [op for op in battle.opponent_active_pokemon if op and not op.fainted]
+        elif target_idx in {1, 2}:
+            target = battle.opponent_active_pokemon[target_idx - 1]
+            targets = [target] if target and not target.fainted else []
+        else:
+            targets = []
 
         if move.id == "tailwind":
-            tw_start = battle.side_conditions.get(SideCondition.TAILWIND, -1)
-            if tw_start >= 0 and max(0, 4 - (battle.turn - tw_start)) > 0:
-                penalty -= _SHAPING_PENALTY
+            tailwind_start = battle.side_conditions.get(SideCondition.TAILWIND, -1)
+            penalties += int(tailwind_start >= 0 and 4 - (battle.turn - tailwind_start) > 0)
 
         if is_tera and move.id in _PROTECT_MOVES:
-            penalty -= _SHAPING_PENALTY
+            penalties += 1
 
         if move.category != MoveCategory.STATUS and not is_tera:
-            target_idx = (a - 7) % 5 - 2
-            targets = []
-            if target_idx == 1:
-                targets = [battle.opponent_active_pokemon[0]]
-            elif target_idx == 2:
-                targets = [battle.opponent_active_pokemon[1]]
-            elif target_idx == 0:
-                targets = [op for op in battle.opponent_active_pokemon if op and not op.fainted]
+            penalties += int(
+                bool(targets)
+                and all(
+                    _move_is_blocked_by_immunity(move, active_mon, t)
+                    and not _target_has_defensive_escape(t, battle)
+                    for t in targets
+                )
+            )
 
-            if targets and all(
-                t is not None and not t.fainted and t.damage_multiplier(move) == 0
-                for t in targets
-            ):
-                if not battle.can_tera[pos] and not battle.available_switches[pos]:
-                    penalty -= _SHAPING_PENALTY
+        if move.id == "auroraveil":
+            veil_start = battle.side_conditions.get(SideCondition.AURORA_VEIL, -1)
+            penalties += int(
+                Weather.SNOWSCAPE not in battle.weather
+                or (veil_start >= 0 and 5 - (battle.turn - veil_start) > 0)
+            )
 
-    return penalty
+        if active_mon.ability == "prankster" and move.category == MoveCategory.STATUS:
+            penalties += int(
+                bool(targets)
+                and all(
+                    PokemonType.DARK in t.types and not _target_has_defensive_escape(t, battle)
+                    for t in targets
+                )
+            )
+
+    return -_SHAPING_PENALTY * penalties
 
 
 class VGCEnvPlayer(_EnvPlayer):
@@ -484,9 +534,20 @@ class SimEnv(Gen9VGCEnv):
             team=team,
         )
 
+    def get_legal_tp_actions(self):
+        return [np.array([i, j], dtype=np.int64) for i in range(36) for j in range(36)]
+
     def step(self, actions):
-        p1_pen = _compute_shaping_penalty(actions[self.agent1.username], self.battle1) if self.battle1 else 0.0
-        p2_pen = _compute_shaping_penalty(actions[self.agent2.username], self.battle2) if self.battle2 else 0.0
+        p1_pen = (
+            _compute_shaping_penalty(actions[self.agent1.username], self.battle1)
+            if self.battle1
+            else 0.0
+        )
+        p2_pen = (
+            _compute_shaping_penalty(actions[self.agent2.username], self.battle2)
+            if self.battle2
+            else 0.0
+        )
 
         obs, rewards, terminated, truncated, info = super().step(actions)
 

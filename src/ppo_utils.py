@@ -35,15 +35,15 @@ class PPOConfig:
 
     gamma: float = 0.97
     gae_lambda: float = 0.95
-    lr: float = 5e-5
-    batch_size: int = 16
-    clip_range: float = 0.2
-    entropy_coef: float = 0.05
-    entropy_coef_floor: float = 0.005
-    entropy_anneal_start: int = 1000
+    lr: float = 3e-5
+    batch_size: int = 32
+    clip_range: float = 0.25
+    entropy_coef: float = 0.06
+    entropy_coef_floor: float = 0.02
+    entropy_anneal_start: int = 3000
     value_coef: float = 0.5
     max_grad_norm: float = 1.0
-    target_kl: float = 0.03
+    target_kl: float = 0.05
     ppo_epochs: int = 4
     warmup_episodes: int = 100
     min_lr: float = 1e-6
@@ -61,7 +61,7 @@ class PPOConfig:
     compile_policy: bool = False
     # Skew importance of team preview step
     teampreview_loss_mult: float = 1.5
-    teampreview_entropy_mult: float = 1.5
+    teampreview_entropy_mult: float = 2.0
 
 
 def load_config(config_path: str = ".ppoconfig") -> PPOConfig:

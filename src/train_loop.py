@@ -53,7 +53,7 @@ signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
 
 policy = PolicyNet(obs_dim=OBS_DIM, act_size=ACT_SIZE)
-optimizer = optim.Adam(policy.parameters(), lr=config.lr, eps=1e-6)
+optimizer = optim.AdamW(policy.parameters(), lr=config.lr, eps=1e-6, weight_decay=1e-4)
 
 
 def lr_lambda(episode):
@@ -93,6 +93,7 @@ def collect_rollout(
     buffer: RolloutBuffer,
     opponent_policy: PolicyNet,
     is_self_play: bool = False,
+    episode: int = 0,
 ) -> tuple[bool, bool]:
     obs, _ = env.reset()
     agent1 = env.agent1.username
@@ -230,7 +231,9 @@ def collect_rollout(
     return winner, is_self_play
 
 
-def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPool):
+def collect_all_rollouts(
+    envs, buffer: RolloutBuffer, executor, pool: OpponentPool, episode: int = 0
+):
     env_queue = queue.Queue()
     for env in envs:
         env_queue.put(env)
@@ -251,6 +254,7 @@ def collect_all_rollouts(envs, buffer: RolloutBuffer, executor, pool: OpponentPo
                 buffer,
                 opponent_policy,
                 is_self_play=(opponent_id == "latest"),
+                episode=episode,
             )
             return opponent_id, won, was_self_play
         finally:
@@ -357,13 +361,11 @@ def _run_batched_ppo(
         is_tp_t = torch.cat([ep_is_tp[t : t + 1] for ep_is_tp in is_tp[:active_n]], dim=0)
 
         curr_state = (state[0][:active_n], state[1][:active_n])
-        curr_log_prob, curr_entropy, curr_normalized_entropy, curr_val, next_state = (
-            policy.evaluate_actions(
-                obs_t,
-                actions_t,
-                action_masks_t,
-                state=curr_state,
-            )
+        curr_log_prob, _, curr_normalized_entropy, curr_val, next_state = policy.evaluate_actions(
+            obs_t,
+            actions_t,
+            action_masks_t,
+            state=curr_state,
         )
 
         log_ratio = curr_log_prob - old_log_probs_t
@@ -374,9 +376,9 @@ def _run_batched_ppo(
 
         step_policy_loss = -torch.min(surr1, surr2)
         step_value_loss = F.mse_loss(curr_val, returns_t, reduction="none")
-        step_entropy_loss = -curr_entropy
+        step_entropy_loss = -curr_normalized_entropy
 
-        is_tp_mask = is_tp_t.squeeze(-1)
+        is_tp_mask = is_tp_t.reshape(-1)
         step_ent_coef = curr_ent_coef * torch.where(
             is_tp_mask, config.teampreview_entropy_mult, 1.0
         )
@@ -395,18 +397,23 @@ def _run_batched_ppo(
 
         total_loss = total_loss + step_loss.sum()
         total_steps += active_n
+
         state = next_state
 
         with torch.no_grad():
-            metrics["policy_loss"] += step_policy_loss.sum().item()
+            metrics["policy_loss"] += step_policy_loss.sum().item() if not is_warmup else 0.0
             metrics["value_loss"] += step_value_loss.sum().item()
-            metrics["entropy_loss"] += step_entropy_loss.sum().item()
+            metrics["entropy_loss"] += step_entropy_loss.sum().item() if not is_warmup else 0.0
 
             metrics["normalized_entropy"] += curr_normalized_entropy.sum().item()
 
             # schulman kl approx (was having negative kl in early steps)
-            metrics["kl_div"] += ((ratio - 1) - log_ratio).sum().item()
-            metrics["clip_frac"] += ((ratio - 1.0).abs() > config.clip_range).float().sum().item()
+            metrics["kl_div"] += ((ratio - 1) - log_ratio).sum().item() if not is_warmup else 0.0
+            metrics["clip_frac"] += (
+                ((ratio - 1.0).abs() > config.clip_range).float().sum().item()
+                if not is_warmup
+                else 0.0
+            )
             metrics["entropy_coef"] = curr_ent_coef  # same for all steps in minibatch
 
     return total_loss, metrics, total_steps
@@ -465,10 +472,30 @@ def ppo_update(episodes: list, episode: int) -> dict:
             last_entropy_coef = batch_metrics["entropy_coef"]
 
             if batch_steps > 0:
-                (batch_loss / batch_steps).backward()
+                scaled_loss = batch_loss / batch_steps
+                if not torch.isfinite(scaled_loss):
+                    logging.warning(
+                        "Skipping PPO batch with non-finite loss at episode %s, epoch %s, batch %s",
+                        episode,
+                        epoch_idx + 1,
+                        batch_start // config.batch_size + 1,
+                    )
+                    continue
+
+                scaled_loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     policy.parameters(), config.max_grad_norm
                 )
+                if not torch.isfinite(grad_norm):
+                    logging.warning(
+                        "Skipping PPO batch with non-finite grad norm at episode %s, epoch %s, batch %s",
+                        episode,
+                        epoch_idx + 1,
+                        batch_start // config.batch_size + 1,
+                    )
+                    optimizer.zero_grad(set_to_none=True)
+                    continue
+
                 tot_grad_norm += grad_norm.item()
                 optimizer.step()
                 num_updates += 1
@@ -499,6 +526,8 @@ def ppo_update(episodes: list, episode: int) -> dict:
             "kl_divergence": 0.0,
             "grad_norm": 0.0,
             "clip_fraction": 0.0,
+            "entropy_coefficient": config.entropy_coef,
+            "explained_variance": 0.0,
             "time": time.time() - t0,
         }
 
@@ -582,7 +611,7 @@ def main():
             policy.eval()
 
             t0_rollout = time.time()
-            rollout_stats = collect_all_rollouts(envs, buffer, executor, pool)
+            rollout_stats = collect_all_rollouts(envs, buffer, executor, pool, episode=episode)
             rollout_time = time.time() - t0_rollout
 
             if not buffer.trajectories:

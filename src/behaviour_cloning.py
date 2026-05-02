@@ -124,7 +124,9 @@ def train_behavior_cloning(
         policy = PolicyNet()
 
     device = policy.device
-    optimizer = torch.optim.Adam(policy.parameters(), lr=learning_rate, eps=1e-5)
+    optimizer = torch.optim.AdamW(
+        policy.parameters(), lr=learning_rate, eps=1e-5, weight_decay=1e-4
+    )
 
     for epoch in range(num_epochs):
         print(f"Epoch {epoch + 1}/{num_epochs}")
