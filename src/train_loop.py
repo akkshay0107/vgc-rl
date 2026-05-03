@@ -361,11 +361,13 @@ def _run_batched_ppo(
         is_tp_t = torch.cat([ep_is_tp[t : t + 1] for ep_is_tp in is_tp[:active_n]], dim=0)
 
         curr_state = (state[0][:active_n], state[1][:active_n])
-        curr_log_prob, _, curr_normalized_entropy, curr_val, next_state = policy.evaluate_actions(
-            obs_t,
-            actions_t,
-            action_masks_t,
-            state=curr_state,
+        curr_log_prob, curr_entropy, curr_normalized_entropy, curr_val, next_state = (
+            policy.evaluate_actions(
+                obs_t,
+                actions_t,
+                action_masks_t,
+                state=curr_state,
+            )
         )
 
         log_ratio = curr_log_prob - old_log_probs_t
@@ -376,7 +378,7 @@ def _run_batched_ppo(
 
         step_policy_loss = -torch.min(surr1, surr2)
         step_value_loss = F.mse_loss(curr_val, returns_t, reduction="none")
-        step_entropy_loss = -curr_normalized_entropy
+        step_entropy_loss = -curr_entropy
 
         is_tp_mask = is_tp_t.reshape(-1)
         step_ent_coef = curr_ent_coef * torch.where(
