@@ -13,6 +13,19 @@ dependencies = [
     "tensorboard>=2.20.0",
 ]
 
+[project.optional-dependencies]
+cpu = []
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "extra == 'cpu'" },
+]
+
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
